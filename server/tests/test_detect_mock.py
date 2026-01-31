@@ -4,30 +4,17 @@ import io
 from dataclasses import dataclass
 
 from fastapi.testclient import TestClient
+import numpy as np
 from PIL import Image
 
 import app.main as main
 
 
-@dataclass
-class _FakeTensor:
-    _v: list
-
-    def __getitem__(self, idx):
-        return _FakeTensor([self._v[idx]])
-
-    def item(self):
-        return float(self._v[0])
-
-    def tolist(self):
-        return self._v
-
-
 class _FakeBox:
     def __init__(self):
-        self.cls = _FakeTensor([0])
-        self.conf = _FakeTensor([0.9])
-        self.xyxy = _FakeTensor([[10.0, 20.0, 110.0, 220.0]])
+        self.cls = np.array([0])
+        self.conf = np.array([0.9])
+        self.xyxy = np.array([[10.0, 20.0, 110.0, 220.0]])
 
 
 class _FakeResult:
