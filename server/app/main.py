@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import io
+import logging
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+import numpy as np
 from PIL import Image
+import torch
 
 
 # Lazy model creation so tests can monkeypatch it without downloading weights.
 _model: Optional[Any] = None
+logger = logging.getLogger(__name__)
 
 
 def get_model():
@@ -20,6 +25,51 @@ def get_model():
         # Biggest common pretrained model in YOLOv8 family.
         _model = YOLO("yolov8x.pt")
     return _model
+
+
+def _to_numpy(value: Any) -> np.ndarray:
+    if isinstance(value, torch.Tensor):
+        return value.detach().cpu().numpy()
+    return np.asarray(value)
+
+
+def _box_xyxy_list(xyxy: Any) -> List[float]:
+    xyxy_arr = _to_numpy(xyxy)
+    if xyxy_arr.ndim > 1:
+        xyxy_arr = xyxy_arr[0]
+    return [float(v) for v in xyxy_arr.tolist()]
+
+
+def _results_to_boxes(result: Any, model_names: Dict[int, str]) -> List[Dict[str, Any]]:
+    boxes = getattr(result, "boxes", None)
+    if boxes is None:
+        return []
+
+    if hasattr(boxes, "xyxy"):
+        xyxy_arr = _to_numpy(boxes.xyxy)
+        conf_arr = _to_numpy(boxes.conf) if getattr(boxes, "conf", None) is not None else None
+        cls_arr = _to_numpy(boxes.cls) if getattr(boxes, "cls", None) is not None else None
+
+        output: List[Dict[str, Any]] = []
+        for idx in range(len(xyxy_arr)):
+            cls_id = int(cls_arr[idx]) if cls_arr is not None else -1
+            name = model_names.get(cls_id, str(cls_id))
+            score = float(conf_arr[idx]) if conf_arr is not None else 0.0
+            xyxy_list = [float(v) for v in xyxy_arr[idx].tolist()]
+            output.append({"name": name, "score": score, "xyxy": xyxy_list})
+        return output
+
+    output = []
+    for box in boxes:
+        cls_arr = _to_numpy(box.cls)
+        conf_arr = _to_numpy(box.conf)
+        xyxy_arr = _to_numpy(box.xyxy)
+        cls_id = int(np.ravel(cls_arr)[0])
+        name = model_names.get(cls_id, str(cls_id))
+        score = float(np.ravel(conf_arr)[0])
+        xyxy_list = _box_xyxy_list(xyxy_arr)
+        output.append({"name": name, "score": score, "xyxy": xyxy_list})
+    return output
 
 
 def create_app() -> FastAPI:
@@ -43,20 +93,19 @@ def create_app() -> FastAPI:
         data = await file.read()
         img = Image.open(io.BytesIO(data)).convert("RGB")
 
-        model = get_model()
-        results = model.predict(img, conf=float(conf), verbose=False)
-        r = results[0]
+        try:
+            model = get_model()
+            results = model.predict(img, conf=float(conf), verbose=False)
+            r = results[0]
 
-        boxes: List[Dict[str, Any]] = []
-        if getattr(r, "boxes", None) is not None:
-            for b in r.boxes:
-                cls = int(b.cls[0])
-                name = model.names.get(cls, str(cls))
-                score = float(b.conf[0])
-                xyxy = b.xyxy[0].tolist()
-                boxes.append({"name": name, "score": score, "xyxy": xyxy})
-
-        return {"count": len(boxes), "boxes": boxes}
+            boxes = _results_to_boxes(r, model.names)
+            return {"count": len(boxes), "boxes": boxes}
+        except Exception as exc:
+            logger.exception("Detection failed")
+            return JSONResponse(
+                status_code=500,
+                content={"error": "Detection failed", "message": str(exc)},
+            )
 
     return app
 
