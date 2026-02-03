@@ -33,10 +33,11 @@ def _to_numpy(value: Any) -> np.ndarray:
     return np.asarray(value)
 
 
-def _box_xyxy_list(xyxy: np.ndarray) -> List[float]:
-    if xyxy.ndim > 1:
-        xyxy = xyxy[0]
-    return [float(v) for v in xyxy.tolist()]
+def _box_xyxy_list(xyxy: Any) -> List[float]:
+    xyxy_arr = _to_numpy(xyxy)
+    if xyxy_arr.ndim > 1:
+        xyxy_arr = xyxy_arr[0]
+    return [float(v) for v in xyxy_arr.tolist()]
 
 
 def _results_to_boxes(result: Any, model_names: Dict[int, str]) -> List[Dict[str, Any]]:
@@ -66,7 +67,7 @@ def _results_to_boxes(result: Any, model_names: Dict[int, str]) -> List[Dict[str
         cls_id = int(np.ravel(cls_arr)[0])
         name = model_names.get(cls_id, str(cls_id))
         score = float(np.ravel(conf_arr)[0])
-        xyxy_list = _box_xyxy_list(np.asarray(xyxy_arr))
+        xyxy_list = _box_xyxy_list(xyxy_arr)
         output.append({"name": name, "score": score, "xyxy": xyxy_list})
     return output
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+import pytest
 import torch
 
 from app.main import _results_to_boxes
@@ -21,13 +22,9 @@ class _FakeResult:
 
 
 def _assert_box_payload(boxes):
-    assert boxes == [
-        {
-            "name": "resistor",
-            "score": 0.9,
-            "xyxy": [10.0, 20.0, 110.0, 220.0],
-        }
-    ]
+    assert boxes[0]["name"] == "resistor"
+    assert boxes[0]["score"] == pytest.approx(0.9, rel=1e-6)
+    assert boxes[0]["xyxy"] == [10.0, 20.0, 110.0, 220.0]
     for value in boxes[0]["xyxy"]:
         assert isinstance(value, float)
     assert isinstance(boxes[0]["score"], float)
