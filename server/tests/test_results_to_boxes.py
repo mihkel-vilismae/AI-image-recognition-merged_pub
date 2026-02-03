@@ -4,9 +4,10 @@ from dataclasses import dataclass
 
 import numpy as np
 import pytest
-import torch
 
-from app.main import _results_to_boxes
+torch = pytest.importorskip("torch")
+
+from app.main import _results_to_boxes, _to_numpy
 
 
 @dataclass
@@ -28,6 +29,12 @@ def _assert_box_payload(boxes):
     for value in boxes[0]["xyxy"]:
         assert isinstance(value, float)
     assert isinstance(boxes[0]["score"], float)
+
+
+def test_to_numpy_cpu_tensor():
+    tensor = torch.tensor([1.5, 2.5])
+    array = _to_numpy(tensor)
+    assert array.tolist() == [1.5, 2.5]
 
 
 def test_results_to_boxes_cpu_tensor():

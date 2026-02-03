@@ -27,10 +27,13 @@ def get_model():
     return _model
 
 
-def _to_numpy(value: Any) -> np.ndarray:
+def _to_numpy(value: Any, dtype: Any | None = None) -> np.ndarray:
     if isinstance(value, torch.Tensor):
-        return value.detach().cpu().numpy()
-    return np.asarray(value)
+        array = value.detach().cpu().numpy()
+        if dtype is not None:
+            return array.astype(dtype)
+        return array
+    return np.asarray(value, dtype=dtype)
 
 
 def _box_xyxy_list(xyxy: Any) -> List[float]:
@@ -47,8 +50,10 @@ def _results_to_boxes(result: Any, model_names: Dict[int, str]) -> List[Dict[str
 
     if hasattr(boxes, "xyxy"):
         xyxy_arr = _to_numpy(boxes.xyxy)
-        conf_arr = _to_numpy(boxes.conf) if getattr(boxes, "conf", None) is not None else None
-        cls_arr = _to_numpy(boxes.cls) if getattr(boxes, "cls", None) is not None else None
+        conf_arr = (
+            _to_numpy(boxes.conf, dtype=float) if getattr(boxes, "conf", None) is not None else None
+        )
+        cls_arr = _to_numpy(boxes.cls, dtype=int) if getattr(boxes, "cls", None) is not None else None
 
         output: List[Dict[str, Any]] = []
         for idx in range(len(xyxy_arr)):
@@ -61,8 +66,8 @@ def _results_to_boxes(result: Any, model_names: Dict[int, str]) -> List[Dict[str
 
     output = []
     for box in boxes:
-        cls_arr = _to_numpy(box.cls)
-        conf_arr = _to_numpy(box.conf)
+        cls_arr = _to_numpy(box.cls, dtype=int)
+        conf_arr = _to_numpy(box.conf, dtype=float)
         xyxy_arr = _to_numpy(box.xyxy)
         cls_id = int(np.ravel(cls_arr)[0])
         name = model_names.get(cls_id, str(cls_id))
