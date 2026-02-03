@@ -1,23 +1,35 @@
-# Python
-__pycache__/
-*.py[cod]
-*.pyd
-*.so
-.venv/
-venv/
-.env
-
-# Logs
-*.log
-
-# OS
+# OS / editor
 .DS_Store
 Thumbs.db
+
+# IDEs
+.idea/
+.vscode/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Logs
+logs/
+*.log
 
 # Node
 node_modules/
 dist/
-.vite/
+coverage/
 
-# Test cache
-.pytest_cache/
+# Lockfiles (do not track)
+package-lock.json
+web/package-lock.json
+
+# Model weights / artifacts (do not commit)
+*.pt
+*.onnx
+*.engine
+server/*.pt
+server/*.onnx
+server/*.engine
