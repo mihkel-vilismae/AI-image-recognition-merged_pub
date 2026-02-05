@@ -180,3 +180,112 @@ canvas { width: 100%; height: auto; display: block; }
   .span2 { grid-column: auto; }
   .results { grid-template-columns: 1fr; }
 }
+
+
+.controls.col {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.video {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid rgba(152,167,194,0.25);
+  background: rgba(0,0,0,0.2);
+}
+
+
+.pageLinks {
+  margin-top: 8px;
+}
+
+.pageLinks a {
+  color: #ffeb3b;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.pageLinks a:hover {
+  text-decoration: underline;
+}
+
+
+.videoWrap {
+  position: relative;
+}
+
+.videoOverlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.row.selectable {
+  cursor: pointer;
+}
+
+.row.selectable.active {
+  background: rgba(255, 235, 59, 0.15);
+  border-radius: 8px;
+}
+
+
+.modeHeading {
+  margin: 0;
+  font-size: 14px;
+  color: #ffeb3b;
+}
+
+.actionRow {
+  display: flex;
+  gap: 10px;
+}
+
+.btnOverlay.armed {
+  border-color: #ffeb3b;
+  box-shadow: 0 0 0 1px rgba(255,235,59,0.35), 0 0 18px rgba(255,235,59,0.35);
+  animation: overlayReadyPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes overlayReadyPulse {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.02); }
+  100% { transform: scale(1); }
+}
+
+
+.hidden {
+  display: none;
+}
+
+.modeSwitch {
+  display: flex;
+  gap: 8px;
+}
+
+.modeBtn {
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.modeBtn.active {
+  border-color: #ffeb3b;
+  box-shadow: 0 0 0 1px rgba(255,235,59,0.35);
+}
+
+
+.frameMeta {
+  margin-top: 8px;
+  color: var(--muted);
+}
+
+.resultTools {
+  margin-bottom: 8px;
+}
+
+.btnSmall {
+  padding: 6px 10px;
+  font-size: 12px;
+}

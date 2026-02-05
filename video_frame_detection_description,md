@@ -1,0 +1,102 @@
+# Video Frame Detection Description (Web App Perspective)
+
+This document explains how the web app handles:
+
+1. **Whole-video analysis and playback with rectangles**
+2. **Real-time video analysis and playback**
+3. **Frame-list highlighting behavior**
+4. **Manual playback timestamp changes** (seek/rewind/jump)
+
+---
+
+## 1) Whole-video analysis and playback with rectangles
+
+In whole-video mode, the user uploads a video and asks the app to analyze the full clip (sampled by the backend settings).
+
+### Flow
+
+1. **User uploads/selects a video** in the web interface.
+2. The app sends the video to the backend whole-video endpoint.
+3. The backend returns sampled frame detections (including timestamps/frame indexes and bounding boxes).
+4. The app stores the returned detection list in memory.
+5. The app starts (or resumes) local video playback.
+6. During playback, on each render/update tick:
+   - the app maps the video’s current playback time to the best matching analyzed frame,
+   - draws the matching bounding boxes on the overlay canvas above the video,
+   - updates frame-list selection/highlighting.
+
+### Drawing rectangles
+
+- Rectangles are not permanently burned into the video file.
+- They are rendered as an overlay in the browser based on the currently matched analyzed frame.
+- As playback time changes, the overlay updates to the corresponding detection result.
+
+---
+
+## 2) Real-time video analysis and playback
+
+In real-time mode, playback and detection happen concurrently.
+
+### Flow
+
+1. The user enables real-time mode and starts playback.
+2. The app periodically captures the *current* video frame (based on configured cadence/conditions).
+3. Each captured frame is sent to the backend `/detect` endpoint.
+4. Responses include detection boxes and timing metadata.
+5. When each response arrives, the app:
+   - validates freshness (discarding stale responses when outside the configured validity window),
+   - records frame metadata for display/logging,
+   - updates the active overlay boxes for the corresponding playback moment.
+6. Playback continues while new detections are requested and rendered.
+
+### Real-time freshness control
+
+- The **valid detection window (ms)** slider controls how old a response can be before it is ignored.
+- This helps trade off between throughput and visual relevance of boxes on fast-moving scenes.
+
+---
+
+## 3) Frame-list highlighting behavior
+
+The frame/result list in the UI is synchronized with playback.
+
+### Automatic highlighting
+
+- As the video plays, the app computes the currently relevant analyzed frame.
+- The corresponding list item is highlighted to show which detection entry is active.
+- Highlight moves forward/backward as playback position changes.
+
+### User-initiated selection
+
+- When the user clicks a frame-list item, the app selects it as the active entry.
+- The UI updates the overlay to that frame’s detection boxes.
+- If the implementation links list click to seeking, playback position is moved to that frame timestamp as well.
+
+---
+
+## 4) Manual playback timestamp changes (seek/rewind/jump)
+
+The user can manually change playback position using browser controls (scrubbing), keyboard shortcuts, or custom controls (for example, rewinding 10 seconds or jumping to T+10s).
+
+### What happens after a seek
+
+1. The video element emits a seek/time-update event.
+2. The app reads the new `currentTime`.
+3. The app remaps `currentTime` to the nearest/best analyzed frame record.
+4. Overlay rectangles are redrawn for that mapped frame.
+5. Frame-list highlight is updated to keep list and canvas synchronized.
+
+### Examples
+
+- **Rewind 10 seconds:** `currentTime` decreases; highlight and boxes move to an earlier analyzed frame.
+- **Jump to T+10 seconds:** `currentTime` is set directly; highlight and boxes immediately switch to the corresponding frame result.
+- **Drag scrubber continuously:** highlight/overlay update repeatedly as time changes.
+
+---
+
+## Behavioral guarantees expected from the web app
+
+- Playback timeline remains the source of truth for what is shown.
+- Overlay boxes always represent the detection result mapped to the current playback time (or closest available sampled frame).
+- Frame list highlight stays in sync with playback and manual seeking.
+- In real-time mode, stale responses are safely discarded when configured, preventing misleading delayed overlays.

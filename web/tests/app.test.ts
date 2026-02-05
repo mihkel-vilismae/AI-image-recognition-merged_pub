@@ -14,6 +14,16 @@ function makeClipboardEventWithImage(file: File) {
 }
 
 describe('initApp', () => {
+  it('renders a videos link in image page header', () => {
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+
+    initApp(root, { apiBase: 'http://localhost:8000' })
+
+    const link = root.querySelector<HTMLAnchorElement>('.pageLinks a')
+    expect(link?.getAttribute('href')).toBe('/videos.html')
+  })
+
   it('enables Detect button after selecting a file via onPickFile()', async () => {
     const root = document.createElement('div')
     document.body.appendChild(root)
@@ -26,7 +36,26 @@ describe('initApp', () => {
     const f = new File([new Uint8Array([1, 2, 3])], 'x.png', { type: 'image/png' })
     onPickFile(f)
 
-    // button should become enabled
+    expect(btn.disabled).toBe(false)
+  })
+
+  it('handles native file input selection change', () => {
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+
+    initApp(root, { apiBase: 'http://localhost:8000' })
+
+    const btn = root.querySelector<HTMLButtonElement>('#run')!
+    const fileInput = root.querySelector<HTMLInputElement>('#file')!
+    expect(btn.disabled).toBe(true)
+
+    const file = new File([new Uint8Array([1, 2, 3])], 'picked.png', { type: 'image/png' })
+    Object.defineProperty(fileInput, 'files', {
+      configurable: true,
+      get: () => [file],
+    })
+
+    fileInput.dispatchEvent(new Event('change'))
     expect(btn.disabled).toBe(false)
   })
 
