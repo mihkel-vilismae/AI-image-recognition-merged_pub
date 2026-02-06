@@ -19,6 +19,7 @@ export function initApp(root: HTMLElement, opts: AppOptions = {}) {
         <h1>AI Image Recognition</h1>
         <p>Upload, drag-drop, or <b>Ctrl+V paste</b> an image → YOLO detects objects</p>
         <div class="pageLinks"><a href="#/videos">Videos</a></div>
+        <div class="pageLinks"><a href="#/camera-stream">Camera stream</a></div>
       </div>
 
       <div class="status" id="status" data-state="idle">

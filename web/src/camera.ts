@@ -42,6 +42,7 @@ export function initCameraApp(root: HTMLElement, opts: CameraAppOptions = {}) {
         <h1>AI Camera Stream Recognition</h1>
         <p>Stream your camera and run YOLO detections in real time</p>
         <div class="pageLinks"><a href="#/images">Images</a></div>
+        <div class="pageLinks"><a href="#/images">Videos</a></div>
       </div>
       <div class="status" id="status" data-state="idle">
         <span class="dot"></span>
