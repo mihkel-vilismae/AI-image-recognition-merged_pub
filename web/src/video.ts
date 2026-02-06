@@ -44,7 +44,7 @@ export function initVideoApp(root: HTMLElement, opts: VideoAppOptions = {}) {
       <div class="title">
         <h1>AI Video Recognition</h1>
         <p>Upload a video and run sampled YOLO detections across frames</p>
-        <div class="pageLinks"><a href="/">Images</a></div>
+        <div class="pageLinks"><a href="#/images">Images</a></div>
       </div>
 
       <div class="status" id="status" data-state="idle">
