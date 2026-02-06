@@ -139,6 +139,78 @@ describe('initVideoApp', () => {
     expect(root.querySelector('.row.selectable.active')?.getAttribute('data-index')).toBe('1')
   })
 
+
+
+  it('appends realtime detections to the results list', async () => {
+    vi.useFakeTimers()
+
+    const fakeCtx = {
+      drawImage: vi.fn(),
+      clearRect: vi.fn(),
+      strokeRect: vi.fn(),
+      fillRect: vi.fn(),
+      fillText: vi.fn(),
+      measureText: vi.fn(() => ({ width: 42 })),
+      font: '',
+      lineWidth: 1,
+      strokeStyle: '',
+      fillStyle: '',
+    } as unknown as CanvasRenderingContext2D
+
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(fakeCtx)
+    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(function (cb) {
+      cb(new Blob([new Uint8Array([1, 2, 3])], { type: 'image/jpeg' }))
+    })
+
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+
+    const { onPickFile, startRealtimeDetect } = initVideoApp(root, { apiBase: 'http://localhost:8000' })
+    const video = root.querySelector<HTMLVideoElement>('#preview')!
+
+    Object.defineProperty(video, 'videoWidth', { configurable: true, get: () => 640 })
+    Object.defineProperty(video, 'videoHeight', { configurable: true, get: () => 360 })
+    Object.defineProperty(video, 'paused', { configurable: true, get: () => false })
+    Object.defineProperty(video, 'ended', { configurable: true, get: () => false })
+    Object.defineProperty(video, 'currentTime', { configurable: true, writable: true, value: 0.25 })
+    Object.defineProperty(video, 'play', { configurable: true, value: vi.fn(() => Promise.resolve()) })
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            count: 1,
+            boxes: [{ name: 'person', score: 0.8, xyxy: [0, 0, 10, 10] }],
+            detection_request_at: '2026-01-01T00:00:00.000Z',
+            detection_completed_at: '2026-01-01T00:00:00.010Z',
+            detection_duration: 10,
+          }),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          },
+        ),
+      ),
+    )
+
+    onPickFile(new File([new Uint8Array([1, 2, 3])], 'picked.mp4', { type: 'video/mp4' }))
+    root.querySelector<HTMLButtonElement>('#modeRealtime')!.click()
+    startRealtimeDetect()
+
+    await vi.advanceTimersByTimeAsync(300)
+    await Promise.resolve()
+
+    video.currentTime = 0.5
+    await vi.advanceTimersByTimeAsync(300)
+    await Promise.resolve()
+
+    const rows = root.querySelectorAll('#list .row')
+    expect(rows.length).toBe(2)
+    expect(root.querySelector('#list')?.textContent).toContain('0.00s')
+    expect(root.querySelector('#list')?.textContent).toContain('0.50s')
+  })
+
   it('discards stale realtime frame detections based on slider threshold', async () => {
     vi.useFakeTimers()
 
