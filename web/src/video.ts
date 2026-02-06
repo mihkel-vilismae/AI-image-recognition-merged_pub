@@ -543,7 +543,7 @@ export function initVideoApp(root: HTMLElement, opts: VideoAppOptions = {}) {
 
       drawBoxes(json.boxes || [])
       updateFrameMeta(requestFrameNumber, completeAtIso, durationMs)
-      listEl.innerHTML = `<div class="row"><div class="name">${requestedAtSec.toFixed(2)}s</div><div class="score mono">${json.count ?? 0} boxes</div></div>`
+      appendRealtimeResultRow(requestedAtSec, json.count ?? 0)
       setRawPayload({
         mode: 'realtime',
         stale_threshold_ms: staleThresholdMs,
@@ -589,6 +589,17 @@ export function initVideoApp(root: HTMLElement, opts: VideoAppOptions = {}) {
       if (!overlayPlaybackActive || previewEl.paused || previewEl.ended) return
       void detectRealtimeFrame(previewEl.currentTime)
     }, 250)
+  }
+
+  function appendRealtimeResultRow(timeSec: number, boxCount: number) {
+    if (listEl.querySelector('.muted')) {
+      listEl.innerHTML = ''
+    }
+
+    listEl.insertAdjacentHTML(
+      'beforeend',
+      `<div class="row"><div class="name">${timeSec.toFixed(2)}s</div><div class="score mono">${boxCount} boxes</div></div>`,
+    )
   }
 
   confValEl.textContent = Number(confEl.value).toFixed(2)
