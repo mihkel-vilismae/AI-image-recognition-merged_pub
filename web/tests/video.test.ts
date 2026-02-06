@@ -139,8 +139,6 @@ describe('initVideoApp', () => {
     expect(root.querySelector('.row.selectable.active')?.getAttribute('data-index')).toBe('1')
   })
 
-
-
   it('appends realtime detections to the results list', async () => {
     vi.useFakeTimers()
 

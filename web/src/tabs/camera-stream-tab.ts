@@ -1,16 +1,13 @@
 import './tab-style.css'
+import { initCameraApp } from '../camera'
 
+/**
+ * Mounts the camera stream tab into the provided root element. This simply
+ * delegates to `initCameraApp` defined in `../camera` which handles
+ * constructing the UI and hooking up all event listeners. Keeping the
+ * mounting function thin preserves architectural boundaries and makes
+ * the tab system consistent across modules.
+ */
 export function mountCameraStreamTab(root: HTMLElement) {
-  root.innerHTML = `
-  <div class="page">
-    <header class="header">
-      <div class="title">
-        <h1>Camera Stream</h1>
-      </div>
-    </header>
-    <main class="grid">
-      <section class="card span2">hello camera stream</section>
-    </main>
-  </div>
-  `
+  initCameraApp(root)
 }
