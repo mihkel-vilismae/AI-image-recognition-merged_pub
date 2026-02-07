@@ -289,3 +289,29 @@ canvas { width: 100%; height: auto; display: block; }
   padding: 6px 10px;
   font-size: 12px;
 }
+
+.tabsShell {
+  max-width: 1140px;
+  margin: 0 auto;
+}
+
+.tabsNav {
+  display: flex;
+  gap: 8px;
+  padding: 16px;
+}
+
+.tabLink {
+  color: var(--text);
+  text-decoration: none;
+  border: 1px solid var(--stroke);
+  border-radius: 10px;
+  padding: 8px 12px;
+  background: rgba(18, 26, 40, 0.86);
+  font-weight: 600;
+}
+
+.tabLink[data-active="true"] {
+  border-color: #ffeb3b;
+  color: #ffeb3b;
+}
