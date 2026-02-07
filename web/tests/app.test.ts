@@ -21,7 +21,7 @@ describe('initApp', () => {
     initApp(root, { apiBase: 'http://localhost:8000' })
 
     const link = root.querySelector<HTMLAnchorElement>('.pageLinks a')
-    expect(link?.getAttribute('href')).toBe('/videos.html')
+    expect(link?.getAttribute('href')).toBe('#/videos')
   })
 
   it('enables Detect button after selecting a file via onPickFile()', async () => {
