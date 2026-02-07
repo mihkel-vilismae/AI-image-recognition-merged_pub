@@ -134,6 +134,9 @@ export function mountCameraStreamTab(root: HTMLElement) {
   const overlayCtx = streamOverlayEl.getContext('2d')
 
   let connectedSocket: WebSocket | null = null
+  let detectProbeSocket: WebSocket | null = null
+  let detectProbeTimeout: number | null = null
+  let connectStatusTimer: number | null = null
   let stream: MediaStream | null = null
   let detectTimer: number | null = null
 
@@ -236,15 +239,36 @@ export function mountCameraStreamTab(root: HTMLElement) {
     }
   }
 
-  function clearConnectionState() {
+  function clearDetectProbe() {
+    if (detectProbeTimeout != null) {
+      window.clearTimeout(detectProbeTimeout)
+      detectProbeTimeout = null
+    }
+
+    if (detectProbeSocket) {
+      try {
+        detectProbeSocket.close()
+      } catch {}
+      detectProbeSocket = null
+    }
+  }
+
+
+  function clearConnectionState(opts: { preserveConnectMessage?: boolean } = {}) {
     stopRealtimeDetect()
     streamPanelEl.classList.add('hidden')
 
-    if (connectedSocket) {
+    if (connectStatusTimer != null) {
+      window.clearTimeout(connectStatusTimer)
+      connectStatusTimer = null
+    }
+
+    const socketToClose = connectedSocket
+    connectedSocket = null
+    if (socketToClose && socketToClose.readyState < WebSocket.CLOSING) {
       try {
-        connectedSocket.close()
+        socketToClose.close()
       } catch {}
-      connectedSocket = null
     }
 
     if (stream) {
@@ -254,7 +278,9 @@ export function mountCameraStreamTab(root: HTMLElement) {
     }
 
     btnConnectSignalingEl.textContent = 'Connect to signaling server'
-    connectSignalingResultEl.textContent = ''
+    if (!opts.preserveConnectMessage) {
+      connectSignalingResultEl.textContent = ''
+    }
     btnShowVideoStreamEl.disabled = true
     showVideoResultEl.textContent = ''
   }
@@ -298,7 +324,8 @@ export function mountCameraStreamTab(root: HTMLElement) {
   })
 
   btnDetectSignalingEl.addEventListener('click', () => {
-    if (detectSignalingResultEl.textContent) {
+    if (detectProbeSocket || detectSignalingResultEl.textContent) {
+      clearDetectProbe()
       detectSignalingResultEl.textContent = ''
       return
     }
@@ -308,34 +335,39 @@ export function mountCameraStreamTab(root: HTMLElement) {
 
     let done = false
     const socket = openSignalingSocket(host, port)
-    const timeout = window.setTimeout(() => {
+    detectProbeSocket = socket
+    detectProbeTimeout = window.setTimeout(() => {
       if (done) return
       done = true
       detectSignalingResultEl.textContent = `No signaling server detected at ws://${host}:${port}.`
-      try {
-        socket.close()
-      } catch {}
+      clearDetectProbe()
     }, 2500)
 
     socket.addEventListener('open', () => {
       if (done) return
       done = true
-      window.clearTimeout(timeout)
       detectSignalingResultEl.textContent = `Signaling server detected at ws://${host}:${port}.`
-      socket.close()
+      clearDetectProbe()
     })
 
     socket.addEventListener('error', () => {
       if (done) return
       done = true
-      window.clearTimeout(timeout)
       detectSignalingResultEl.textContent = `No signaling server detected at ws://${host}:${port}.`
+      clearDetectProbe()
+    })
+
+    socket.addEventListener('close', () => {
+      if (!done) return
+      clearDetectProbe()
     })
   })
 
+
   btnConnectSignalingEl.addEventListener('click', () => {
+    clearDetectProbe()
     if (connectedSocket) {
-      clearConnectionState()
+      clearConnectionState({ preserveConnectMessage: true })
       return
     }
 
@@ -354,7 +386,7 @@ export function mountCameraStreamTab(root: HTMLElement) {
       if (connectedSocket !== socket) return
       btnConnectSignalingEl.textContent = 'Disconnect from signaling server'
 
-      window.setTimeout(() => {
+      connectStatusTimer = window.setTimeout(() => {
         if (connectedSocket !== socket) return
         connectSignalingResultEl.textContent = observedAnyMessage
           ? `Signaling connection is ok at ws://${host}:${port}. Other clients are likely already connected (messages observed).`
@@ -371,7 +403,7 @@ export function mountCameraStreamTab(root: HTMLElement) {
     socket.addEventListener('error', () => {
       if (connectedSocket !== socket) return
       connectSignalingResultEl.textContent = `Failed to connect to signaling server at ws://${host}:${port}.`
-      clearConnectionState()
+      clearConnectionState({ preserveConnectMessage: true })
     })
   })
 
