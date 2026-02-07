@@ -40,3 +40,13 @@
 .scanDot.failed {
   background: #ff5c7a;
 }
+
+.streamPanel {
+  margin-top: 14px;
+  border-top: 1px solid rgba(152, 167, 194, 0.25);
+  padding-top: 14px;
+}
+
+.cameraPreviewWrap {
+  max-width: 760px;
+}

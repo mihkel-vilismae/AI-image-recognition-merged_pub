@@ -4,11 +4,14 @@ import { mountCameraStreamTab } from '../src/tabs/camera-stream-tab'
 
 class FakeWebSocket {
   static instances: FakeWebSocket[] = []
+  static autoOpen = true
   private handlers = new Map<string, Array<(event?: MessageEvent) => void>>()
 
   constructor(_url: string) {
     FakeWebSocket.instances.push(this)
-    queueMicrotask(() => this.emit('open'))
+    if (FakeWebSocket.autoOpen) {
+      queueMicrotask(() => this.emit('open'))
+    }
   }
 
   addEventListener(type: string, cb: (event?: MessageEvent) => void) {
@@ -31,10 +34,21 @@ describe('camera stream tab', () => {
     vi.restoreAllMocks()
     document.body.innerHTML = ''
     FakeWebSocket.instances = []
+    FakeWebSocket.autoOpen = true
     vi.stubGlobal('WebSocket', FakeWebSocket as unknown as typeof WebSocket)
+
+    vi.spyOn(HTMLVideoElement.prototype, 'play').mockImplementation(async () => undefined)
+    vi.stubGlobal('navigator', {
+      ...navigator,
+      mediaDevices: {
+        getUserMedia: vi.fn(async () => ({
+          getTracks: () => [{ stop: vi.fn() }],
+        })),
+      },
+    })
   })
 
-  it('check selected ip health button uses health helper flow and indicator', async () => {
+  it('health button applies to AI server URL flow and sets found indicator', async () => {
     const root = document.createElement('div')
     document.body.appendChild(root)
     mountCameraStreamTab(root)
@@ -55,20 +69,45 @@ describe('camera stream tab', () => {
     root.querySelector<HTMLButtonElement>('#btnCheckOwnHealth')!.click()
     await new Promise((resolve) => setTimeout(resolve, 0))
 
-    expect(root.querySelector('#cameraStreamStatus')?.textContent).toContain('health check passed')
+    expect(root.querySelector('#cameraStreamStatus')?.textContent).toContain('AI image recognition server health check passed')
     expect(root.querySelector('#scanIndicator')?.classList.contains('found')).toBe(true)
     expect(ownUrl.value).toContain('192.168.17.25:8000/detect?conf=0.25')
   })
 
-  it('shows video stream found when signaling message contains video offer', async () => {
+  it('detect signaling button toggles result text on consecutive clicks', async () => {
     const root = document.createElement('div')
     document.body.appendChild(root)
     mountCameraStreamTab(root)
 
-    const ws = FakeWebSocket.instances[0]
-    ws.emit('message', { data: JSON.stringify({ type: 'offer', sdp: 'v=0\nm=video 9 UDP/TLS/RTP/SAVPF 96' }) } as MessageEvent)
+    const btn = root.querySelector<HTMLButtonElement>('#btnDetectSignaling')!
+    const result = root.querySelector<HTMLSpanElement>('#detectSignalingResult')!
+
+    btn.click()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(result.textContent).toContain('Signaling server detected')
+
+    btn.click()
+    expect(result.textContent).toBe('')
+  })
+
+  it('connect signaling button opens stream panel and toggles off on second click', async () => {
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    mountCameraStreamTab(root)
+
+    const btn = root.querySelector<HTMLButtonElement>('#btnConnectSignaling')!
+    const panel = root.querySelector<HTMLDivElement>('#streamPanel')!
+
+    expect(panel.classList.contains('hidden')).toBe(true)
+
+    btn.click()
     await new Promise((resolve) => setTimeout(resolve, 0))
 
-    expect(root.querySelector('#cameraSignalStatus')?.textContent).toContain('Video stream found')
+    expect(panel.classList.contains('hidden')).toBe(false)
+    expect(btn.textContent).toContain('Disconnect')
+
+    btn.click()
+    expect(panel.classList.contains('hidden')).toBe(true)
+    expect(btn.textContent).toContain('Connect')
   })
 })

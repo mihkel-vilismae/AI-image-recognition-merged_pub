@@ -5,69 +5,38 @@ import {
   DEFAULT_PC_IP,
   DEFAULT_SIGNALING_PORT,
   extractIpv4HostFromText,
-  hasVideoStreamSignal,
   scanSubnetForServer,
 } from './camera-stream-utils'
+
+type DetectBox = { name?: string; score?: number; xyxy?: number[] }
+
+type DetectApiResponse = {
+  boxes?: DetectBox[]
+}
 
 function setScanIndicator(el: HTMLSpanElement, state: 'idle' | 'searching' | 'found' | 'failed') {
   el.classList.remove('idle', 'searching', 'found', 'failed')
   el.classList.add(state)
 }
 
-function pollSignalingServer(host: string, onUpdate: (text: string) => void) {
-  if (typeof WebSocket === 'undefined') {
-    onUpdate(`Signaling server not found at ws://${host}:${DEFAULT_SIGNALING_PORT} yet. Waiting for a reachable signaling endpoint.`)
-    return
+function parseSignalingTarget(input: string): { host: string; port: number } {
+  const trimmed = (input || '').trim()
+  if (!trimmed) return { host: DEFAULT_PC_IP, port: DEFAULT_SIGNALING_PORT }
+
+  const withProtocol = trimmed.includes('://') ? trimmed : `ws://${trimmed}`
+  try {
+    const parsed = new URL(withProtocol)
+    return {
+      host: parsed.hostname || DEFAULT_PC_IP,
+      port: Number(parsed.port || String(DEFAULT_SIGNALING_PORT)),
+    }
+  } catch {
+    return { host: DEFAULT_PC_IP, port: DEFAULT_SIGNALING_PORT }
   }
+}
 
-  const ws = new WebSocket(`ws://${host}:${DEFAULT_SIGNALING_PORT}`)
-  let finished = false
-  const timeout = window.setTimeout(() => {
-    if (finished) return
-    finished = true
-    try {
-      ws.close()
-    } catch {}
-    onUpdate(`Signaling server not found at ws://${host}:${DEFAULT_SIGNALING_PORT} yet. Waiting for a reachable signaling endpoint.`)
-  }, 2500)
-
-  ws.addEventListener('open', () => {
-    if (finished) return
-    onUpdate('Signaling server found and reachable. Listening for incoming stream offer messages.')
-  })
-
-  ws.addEventListener('message', (event) => {
-    if (finished) return
-
-    let payload: unknown = event.data
-    if (typeof payload === 'string') {
-      try {
-        payload = JSON.parse(payload)
-      } catch {}
-    }
-
-    if (hasVideoStreamSignal(payload)) {
-      finished = true
-      window.clearTimeout(timeout)
-      onUpdate('Video stream found: received a signaling message that indicates a video offer/track is available.')
-      try {
-        ws.close()
-      } catch {}
-    }
-  })
-
-  ws.addEventListener('error', () => {
-    if (finished) return
-    finished = true
-    window.clearTimeout(timeout)
-    onUpdate(`Signaling server not found at ws://${host}:${DEFAULT_SIGNALING_PORT} yet. Waiting for a reachable signaling endpoint.`)
-  })
-
-  ws.addEventListener('close', () => {
-    if (finished) return
-    finished = true
-    window.clearTimeout(timeout)
-  })
+function openSignalingSocket(host: string, port: number): WebSocket {
+  return new WebSocket(`ws://${host}:${port}`)
 }
 
 export function mountCameraStreamTab(root: HTMLElement) {
@@ -100,9 +69,34 @@ export function mountCameraStreamTab(root: HTMLElement) {
             <span class="mono" id="cameraWindowVal">350ms</span>
           </label>
 
+          <label class="field" for="ownUrl"><span>AI server /detect URL</span></label>
           <input id="ownUrl" class="mono" value="${buildOwnDetectUrlFromHost(DEFAULT_PC_IP)}" />
-          <div id="cameraStreamStatus" class="hint mono">Idle. Select a target host and run /health check or subnet scan to discover an active server.</div>
-          <div id="cameraSignalStatus" class="hint mono">Signaling status: not checked yet. No WebRTC signaling probe has been executed.</div>
+
+          <label class="field" for="signalingTarget"><span>Signaling server (ip:port)</span></label>
+          <input id="signalingTarget" class="mono" value="${DEFAULT_PC_IP}:${DEFAULT_SIGNALING_PORT}" />
+
+          <div class="cameraStreamTopRow">
+            <button id="btnDetectSignaling" class="btn" type="button">Detect signaling server</button>
+            <span id="detectSignalingResult" class="hint mono"></span>
+          </div>
+
+          <div class="cameraStreamTopRow">
+            <button id="btnConnectSignaling" class="btn" type="button">Connect to signaling server</button>
+            <span id="connectSignalingResult" class="hint mono"></span>
+          </div>
+
+          <div id="cameraStreamStatus" class="hint mono">Idle. Health/scan controls only target the AI image recognition server endpoint.</div>
+        </div>
+
+        <div id="streamPanel" class="streamPanel hidden">
+          <div class="videoWrap cameraPreviewWrap">
+            <video id="streamVideo" class="video" autoplay muted playsinline></video>
+            <canvas id="streamOverlay" class="videoOverlay"></canvas>
+          </div>
+          <div class="cameraStreamTopRow">
+            <button id="btnRealtimeDetectStream" class="btn" type="button">Detect frames in real time</button>
+            <span id="realtimeResult" class="hint mono"></span>
+          </div>
         </div>
       </section>
     </main>
@@ -110,8 +104,8 @@ export function mountCameraStreamTab(root: HTMLElement) {
   `
 
   const ownUrlEl = root.querySelector<HTMLInputElement>('#ownUrl')!
+  const signalingTargetEl = root.querySelector<HTMLInputElement>('#signalingTarget')!
   const statusEl = root.querySelector<HTMLDivElement>('#cameraStreamStatus')!
-  const signalStatusEl = root.querySelector<HTMLDivElement>('#cameraSignalStatus')!
   const btnCheckEl = root.querySelector<HTMLButtonElement>('#btnCheckOwnHealth')!
   const btnScanEl = root.querySelector<HTMLButtonElement>('#btnScanOwnServer')!
   const scanIndicatorEl = root.querySelector<HTMLSpanElement>('#scanIndicator')!
@@ -119,6 +113,20 @@ export function mountCameraStreamTab(root: HTMLElement) {
   const confValEl = root.querySelector<HTMLSpanElement>('#cameraConfVal')!
   const windowEl = root.querySelector<HTMLInputElement>('#cameraWindowMs')!
   const windowValEl = root.querySelector<HTMLSpanElement>('#cameraWindowVal')!
+  const btnDetectSignalingEl = root.querySelector<HTMLButtonElement>('#btnDetectSignaling')!
+  const detectSignalingResultEl = root.querySelector<HTMLSpanElement>('#detectSignalingResult')!
+  const btnConnectSignalingEl = root.querySelector<HTMLButtonElement>('#btnConnectSignaling')!
+  const connectSignalingResultEl = root.querySelector<HTMLSpanElement>('#connectSignalingResult')!
+  const streamPanelEl = root.querySelector<HTMLDivElement>('#streamPanel')!
+  const streamVideoEl = root.querySelector<HTMLVideoElement>('#streamVideo')!
+  const streamOverlayEl = root.querySelector<HTMLCanvasElement>('#streamOverlay')!
+  const btnRealtimeDetectStreamEl = root.querySelector<HTMLButtonElement>('#btnRealtimeDetectStream')!
+  const realtimeResultEl = root.querySelector<HTMLSpanElement>('#realtimeResult')!
+  const overlayCtx = streamOverlayEl.getContext('2d')
+
+  let connectedSocket: WebSocket | null = null
+  let stream: MediaStream | null = null
+  let detectTimer: number | null = null
 
   confEl.addEventListener('input', () => {
     confValEl.textContent = Number(confEl.value).toFixed(2)
@@ -128,49 +136,231 @@ export function mountCameraStreamTab(root: HTMLElement) {
     windowValEl.textContent = `${Number(windowEl.value).toFixed(0)}ms`
   })
 
-  function refreshSignalingStatus() {
-    const host = extractIpv4HostFromText(ownUrlEl.value) ?? DEFAULT_PC_IP
-    pollSignalingServer(host, (text) => {
-      signalStatusEl.textContent = text
+  function stopRealtimeDetect() {
+    if (detectTimer != null) {
+      window.clearInterval(detectTimer)
+      detectTimer = null
+    }
+    btnRealtimeDetectStreamEl.textContent = 'Detect frames in real time'
+    realtimeResultEl.textContent = ''
+  }
+
+  function drawBoxes(boxes: DetectBox[]) {
+    if (!overlayCtx) return
+    const w = streamVideoEl.videoWidth || streamVideoEl.clientWidth
+    const h = streamVideoEl.videoHeight || streamVideoEl.clientHeight
+    if (!w || !h) return
+
+    if (streamOverlayEl.width !== w) streamOverlayEl.width = w
+    if (streamOverlayEl.height !== h) streamOverlayEl.height = h
+
+    overlayCtx.clearRect(0, 0, w, h)
+    overlayCtx.lineWidth = 2
+    overlayCtx.font = '12px system-ui'
+
+    for (const box of boxes) {
+      const xyxy = box.xyxy
+      if (!xyxy || xyxy.length < 4) continue
+      const [x1, y1, x2, y2] = xyxy
+      overlayCtx.strokeStyle = '#ffeb3b'
+      overlayCtx.strokeRect(x1, y1, x2 - x1, y2 - y1)
+      const label = `${box.name ?? 'object'} ${((box.score ?? 0) * 100).toFixed(0)}%`
+      overlayCtx.fillStyle = 'rgba(0,0,0,0.6)'
+      overlayCtx.fillRect(x1, Math.max(0, y1 - 16), overlayCtx.measureText(label).width + 8, 16)
+      overlayCtx.fillStyle = '#fff'
+      overlayCtx.fillText(label, x1 + 4, Math.max(0, y1 - 4))
+    }
+  }
+
+  async function detectOneFrame() {
+    const conf = Number(confEl.value || '0.25')
+    const w = streamVideoEl.videoWidth
+    const h = streamVideoEl.videoHeight
+    if (!w || !h) return
+
+    const captureCanvas = document.createElement('canvas')
+    captureCanvas.width = w
+    captureCanvas.height = h
+    const captureCtx = captureCanvas.getContext('2d')
+    if (!captureCtx) return
+    captureCtx.drawImage(streamVideoEl, 0, 0, w, h)
+
+    const blob = await new Promise<Blob | null>((resolve) => captureCanvas.toBlob((b) => resolve(b), 'image/jpeg', 0.8))
+    if (!blob) return
+
+    const fd = new FormData()
+    fd.append('file', blob, 'stream-frame.jpg')
+
+    const response = await fetch(`${ownUrlEl.value.trim().split('?')[0]}?conf=${encodeURIComponent(conf)}`, {
+      method: 'POST',
+      body: fd,
     })
+
+    if (!response.ok) {
+      realtimeResultEl.textContent = `Frame detect failed: HTTP ${response.status}`
+      return
+    }
+
+    const data = (await response.json()) as DetectApiResponse
+    const boxes = data.boxes ?? []
+    drawBoxes(boxes)
+    realtimeResultEl.textContent = `Realtime frame analyzed. Detected ${boxes.length} boxes from AI image recognition server.`
+  }
+
+  async function ensurePreviewStream() {
+    if (stream) return
+    if (!navigator.mediaDevices?.getUserMedia) {
+      connectSignalingResultEl.textContent = 'Connected to signaling server, but local preview is unavailable in this browser environment.'
+      return
+    }
+
+    stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+    streamVideoEl.srcObject = stream
+    await streamVideoEl.play().catch(() => {})
+  }
+
+  function clearConnectionState() {
+    stopRealtimeDetect()
+    streamPanelEl.classList.add('hidden')
+
+    if (connectedSocket) {
+      try {
+        connectedSocket.close()
+      } catch {}
+      connectedSocket = null
+    }
+
+    if (stream) {
+      for (const track of stream.getTracks()) track.stop()
+      stream = null
+      streamVideoEl.srcObject = null
+    }
+
+    btnConnectSignalingEl.textContent = 'Connect to signaling server'
+    connectSignalingResultEl.textContent = ''
   }
 
   btnCheckEl.addEventListener('click', async () => {
     const host = extractIpv4HostFromText(ownUrlEl.value) ?? DEFAULT_PC_IP
     setScanIndicator(scanIndicatorEl, 'searching')
-    statusEl.textContent = 'Checking selected host /health endpoint. Verifying server reachability and response payload…'
+    statusEl.textContent = 'Checking selected AI image recognition server /health endpoint. Verifying server reachability and response payload…'
     const health = await checkServerHealth(host)
 
     if (health.ok) {
       ownUrlEl.value = buildOwnDetectUrlFromHost(host)
-      statusEl.textContent = health.verified ? 'Own server health check passed. The selected host is responding with a valid health payload.' : 'Server is reachable, but health verification is CORS-limited (opaque/no-cors response). Please verify from the server side if needed.'
+      statusEl.textContent = health.verified
+        ? 'AI image recognition server health check passed. The selected host is responding with a valid health payload.'
+        : 'AI image recognition server is reachable, but health verification is CORS-limited (opaque/no-cors response).'
       setScanIndicator(scanIndicatorEl, 'found')
-      refreshSignalingStatus()
       return
     }
 
-    statusEl.textContent = 'Own server health check failed. Could not verify a healthy server at the selected host.'
+    statusEl.textContent = 'AI image recognition server health check failed. Could not verify a healthy server at the selected host.'
     setScanIndicator(scanIndicatorEl, 'failed')
   })
 
   btnScanEl.addEventListener('click', async () => {
     const seedHost = extractIpv4HostFromText(ownUrlEl.value) ?? DEFAULT_PC_IP
     setScanIndicator(scanIndicatorEl, 'searching')
-    statusEl.textContent = 'Scanning local subnet for an available server. This can take a few seconds while hosts are probed…'
+    statusEl.textContent = 'Scanning local subnet for an available AI image recognition server. This can take a few seconds while hosts are probed…'
     const found = await scanSubnetForServer(seedHost)
 
     if (!found) {
-      statusEl.textContent = 'Local network scan finished without finding a reachable server endpoint.'
+      statusEl.textContent = 'AI image recognition server scan finished without finding a reachable server endpoint.'
       setScanIndicator(scanIndicatorEl, 'failed')
       return
     }
 
     ownUrlEl.value = buildOwnDetectUrlFromHost(found.host)
-    statusEl.textContent = found.health.verified ? 'Own server found on the local network and health endpoint verified successfully.' : 'Potential server found on the local network, but health verification is CORS-limited.'
+    statusEl.textContent = found.health.verified
+      ? 'AI image recognition server found on the local network and health endpoint verified successfully.'
+      : 'Potential AI image recognition server found on the local network, but health verification is CORS-limited.'
     setScanIndicator(scanIndicatorEl, 'found')
-    refreshSignalingStatus()
+  })
+
+  btnDetectSignalingEl.addEventListener('click', () => {
+    if (detectSignalingResultEl.textContent) {
+      detectSignalingResultEl.textContent = ''
+      return
+    }
+
+    const { host, port } = parseSignalingTarget(signalingTargetEl.value)
+    detectSignalingResultEl.textContent = `Detecting signaling server at ws://${host}:${port}…`
+
+    let done = false
+    const socket = openSignalingSocket(host, port)
+    const timeout = window.setTimeout(() => {
+      if (done) return
+      done = true
+      detectSignalingResultEl.textContent = `No signaling server detected at ws://${host}:${port}.`
+      try {
+        socket.close()
+      } catch {}
+    }, 2500)
+
+    socket.addEventListener('open', () => {
+      if (done) return
+      done = true
+      window.clearTimeout(timeout)
+      detectSignalingResultEl.textContent = `Signaling server detected at ws://${host}:${port}.`
+      socket.close()
+    })
+
+    socket.addEventListener('error', () => {
+      if (done) return
+      done = true
+      window.clearTimeout(timeout)
+      detectSignalingResultEl.textContent = `No signaling server detected at ws://${host}:${port}.`
+    })
+  })
+
+  btnConnectSignalingEl.addEventListener('click', async () => {
+    if (connectedSocket) {
+      clearConnectionState()
+      return
+    }
+
+    const { host, port } = parseSignalingTarget(signalingTargetEl.value)
+    connectSignalingResultEl.textContent = `Connecting to signaling server at ws://${host}:${port}…`
+
+    const socket = openSignalingSocket(host, port)
+    connectedSocket = socket
+
+    socket.addEventListener('open', async () => {
+      if (connectedSocket !== socket) return
+      connectSignalingResultEl.textContent = `Connected to signaling server at ws://${host}:${port}.`
+      btnConnectSignalingEl.textContent = 'Disconnect from signaling server'
+      streamPanelEl.classList.remove('hidden')
+      await ensurePreviewStream().catch(() => {
+        connectSignalingResultEl.textContent = 'Connected to signaling server, but failed to initialize preview stream in this environment.'
+      })
+    })
+
+    socket.addEventListener('close', () => {
+      if (connectedSocket !== socket) return
+      clearConnectionState()
+    })
+
+    socket.addEventListener('error', () => {
+      if (connectedSocket !== socket) return
+      connectSignalingResultEl.textContent = `Failed to connect to signaling server at ws://${host}:${port}.`
+      clearConnectionState()
+    })
+  })
+
+  btnRealtimeDetectStreamEl.addEventListener('click', () => {
+    if (detectTimer != null) {
+      stopRealtimeDetect()
+      return
+    }
+
+    btnRealtimeDetectStreamEl.textContent = 'Stop realtime detection'
+    detectTimer = window.setInterval(() => {
+      void detectOneFrame().catch((error) => {
+        realtimeResultEl.textContent = `Realtime frame detect failed: ${String(error)}`
+      })
+    }, 1000)
   })
 
   setScanIndicator(scanIndicatorEl, 'idle')
-  refreshSignalingStatus()
 }
