@@ -1,5 +1,6 @@
 export const DEFAULT_PC_IP = '192.168.17.92'
 export const DEFAULT_SERVER_PORT = 8000
+export const DEFAULT_SIGNALING_PORT = 8765
 
 export function buildOwnDetectUrlFromHost(host: string, conf = 0.25): string {
   const safeHost = typeof host === 'string' ? host.trim() : ''
@@ -50,6 +51,24 @@ export function isLikelyCorsFetchError(err: unknown): boolean {
   if (!err) return false
   const msg = String((err as { message?: string }).message ?? err).toLowerCase()
   return msg.includes('cors') || msg.includes('failed to fetch') || msg.includes('networkerror')
+}
+
+export function hasVideoStreamSignal(message: unknown): boolean {
+  if (typeof message === 'string') {
+    const m = message.toLowerCase()
+    return m.includes('m=video') || (m.includes('offer') && m.includes('video')) || m.includes('video stream')
+  }
+
+  if (!message || typeof message !== 'object') return false
+  const record = message as Record<string, unknown>
+  const type = typeof record.type === 'string' ? record.type.toLowerCase() : ''
+  const kind = typeof record.kind === 'string' ? record.kind.toLowerCase() : ''
+  const sdp = typeof record.sdp === 'string' ? record.sdp.toLowerCase() : ''
+
+  if (kind === 'video') return true
+  if (type === 'offer' && sdp.includes('m=video')) return true
+  if (type.includes('video')) return true
+  return false
 }
 
 export async function checkServerHealth(host: string, timeoutMs = 2500): Promise<{ ok: boolean; verified: boolean; reason: string }> {

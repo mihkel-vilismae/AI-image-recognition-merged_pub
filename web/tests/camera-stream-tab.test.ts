@@ -2,13 +2,39 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { mountCameraStreamTab } from '../src/tabs/camera-stream-tab'
 
+class FakeWebSocket {
+  static instances: FakeWebSocket[] = []
+  private handlers = new Map<string, Array<(event?: MessageEvent) => void>>()
+
+  constructor(_url: string) {
+    FakeWebSocket.instances.push(this)
+    queueMicrotask(() => this.emit('open'))
+  }
+
+  addEventListener(type: string, cb: (event?: MessageEvent) => void) {
+    const list = this.handlers.get(type) ?? []
+    list.push(cb)
+    this.handlers.set(type, list)
+  }
+
+  emit(type: string, event?: MessageEvent) {
+    for (const cb of this.handlers.get(type) ?? []) cb(event)
+  }
+
+  close() {
+    this.emit('close')
+  }
+}
+
 describe('camera stream tab', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
     document.body.innerHTML = ''
+    FakeWebSocket.instances = []
+    vi.stubGlobal('WebSocket', FakeWebSocket as unknown as typeof WebSocket)
   })
 
-  it('check selected ip health button uses health helper flow', async () => {
+  it('check selected ip health button uses health helper flow and indicator', async () => {
     const root = document.createElement('div')
     document.body.appendChild(root)
     mountCameraStreamTab(root)
@@ -30,36 +56,19 @@ describe('camera stream tab', () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
 
     expect(root.querySelector('#cameraStreamStatus')?.textContent).toContain('health check passed')
+    expect(root.querySelector('#scanIndicator')?.classList.contains('found')).toBe(true)
     expect(ownUrl.value).toContain('192.168.17.25:8000/detect?conf=0.25')
   })
 
-  it('scan local network button updates url and status when a host is found', async () => {
+  it('shows video stream found when signaling message contains video offer', async () => {
     const root = document.createElement('div')
     document.body.appendChild(root)
     mountCameraStreamTab(root)
 
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input)
-        if (url.includes('192.168.17.30:8000/health')) {
-          return new Response(JSON.stringify({ ok: true }), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-          })
-        }
-
-        return new Response('fail', { status: 500 })
-      }),
-    )
-
-    const ownUrl = root.querySelector<HTMLInputElement>('#ownUrl')!
-    ownUrl.value = 'http://192.168.17.30:8000/detect?conf=0.25'
-
-    root.querySelector<HTMLButtonElement>('#btnScanOwnServer')!.click()
+    const ws = FakeWebSocket.instances[0]
+    ws.emit('message', { data: JSON.stringify({ type: 'offer', sdp: 'v=0\nm=video 9 UDP/TLS/RTP/SAVPF 96' }) } as MessageEvent)
     await new Promise((resolve) => setTimeout(resolve, 0))
 
-    expect(root.querySelector('#cameraStreamStatus')?.textContent).toContain('own server found')
-    expect(ownUrl.value).toContain('192.168.17.30:8000/detect?conf=0.25')
+    expect(root.querySelector('#cameraSignalStatus')?.textContent).toContain('video stream found')
   })
 })
