@@ -14,6 +14,12 @@ type DetectApiResponse = {
   boxes?: DetectBox[]
 }
 
+type SignalingMessage = {
+  type?: string
+  sdp?: string
+  candidate?: unknown
+}
+
 function setScanIndicator(el: HTMLSpanElement, state: 'idle' | 'searching' | 'found' | 'failed') {
   el.classList.remove('idle', 'searching', 'found', 'failed')
   el.classList.add(state)
@@ -139,6 +145,9 @@ export function mountCameraStreamTab(root: HTMLElement) {
   let connectStatusTimer: number | null = null
   let stream: MediaStream | null = null
   let detectTimer: number | null = null
+  let peerConnection: RTCPeerConnection | null = null
+  let remoteTrackSeen = false
+  let showStreamTimeout: number | null = null
 
   confEl.addEventListener('input', () => {
     confValEl.textContent = Number(confEl.value).toFixed(2)
@@ -219,32 +228,100 @@ export function mountCameraStreamTab(root: HTMLElement) {
     realtimeResultEl.textContent = `Realtime frame analyzed. Detected ${boxes.length} boxes from AI image recognition server.`
   }
 
-  async function showVideoStream() {
-    showVideoResultEl.textContent = ''
-    if (!navigator.mediaDevices?.getUserMedia) {
-      showVideoResultEl.textContent =
-        'Video stream could not be started: camera APIs are unavailable in this browser/runtime environment. With signaling-only mode (no full WebRTC negotiation), there is no remote media fallback.'
+  function resetPeerConnection() {
+    if (showStreamTimeout != null) {
+      window.clearTimeout(showStreamTimeout)
+      showStreamTimeout = null
+    }
+
+    if (peerConnection) {
+      peerConnection.ontrack = null
+      peerConnection.onicecandidate = null
+      try {
+        peerConnection.close()
+      } catch {}
+      peerConnection = null
+    }
+
+    remoteTrackSeen = false
+  }
+
+  function sendSignalingMessage(payload: Record<string, unknown>) {
+    if (!connectedSocket || connectedSocket.readyState !== WebSocket.OPEN) return
+    connectedSocket.send(JSON.stringify(payload))
+  }
+
+  function ensurePeerConnection() {
+    if (peerConnection) return peerConnection
+
+    const pc = new RTCPeerConnection()
+    pc.onicecandidate = (event) => {
+      if (!event.candidate) return
+      sendSignalingMessage({ type: 'candidate', candidate: event.candidate })
+    }
+
+    pc.ontrack = (event) => {
+      stream = event.streams[0] ?? null
+      if (stream) {
+        streamVideoEl.srcObject = stream
+        streamPanelEl.classList.remove('hidden')
+        showVideoResultEl.textContent = 'Remote video stream received from the original source and displayed.'
+      }
+      remoteTrackSeen = true
+      if (showStreamTimeout != null) {
+        window.clearTimeout(showStreamTimeout)
+        showStreamTimeout = null
+      }
+    }
+
+    peerConnection = pc
+    return pc
+  }
+
+  async function handleSignalingPayload(message: SignalingMessage) {
+    if (!message || typeof message !== 'object') return
+
+    if (message.type === 'offer' && typeof message.sdp === 'string') {
+      const pc = ensurePeerConnection()
+      await pc.setRemoteDescription({ type: 'offer', sdp: message.sdp })
+      const answer = await pc.createAnswer()
+      await pc.setLocalDescription(answer)
+      sendSignalingMessage({ type: 'answer', sdp: answer.sdp })
+      showVideoResultEl.textContent = 'Received remote offer from original source; sent answer. Waiting for remote video track…'
       return
     }
 
-    try {
-      if (!stream) {
-        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
-      }
-      streamVideoEl.srcObject = stream
-      await streamVideoEl.play()
-      streamPanelEl.classList.remove('hidden')
-      showVideoResultEl.textContent = 'Video stream started and is now displayed.'
-    } catch (error) {
-      const msg = String(error)
-      if (msg.toLowerCase().includes('notfounderror')) {
-        showVideoResultEl.textContent =
-          'Video stream could not be started: no local camera device was found (NotFoundError). In signaling-only mode, the app currently requires a local camera to render preview.'
-        return
-      }
-
-      showVideoResultEl.textContent = `Video stream error: ${msg}`
+    if (message.type === 'candidate' && message.candidate && peerConnection) {
+      try {
+        await peerConnection.addIceCandidate(message.candidate as RTCIceCandidateInit)
+      } catch {}
     }
+  }
+
+  async function showVideoStream() {
+    showVideoResultEl.textContent = ''
+
+    if (!connectedSocket || connectedSocket.readyState !== WebSocket.OPEN) {
+      showVideoResultEl.textContent = 'Cannot show remote stream: signaling server is not connected yet.'
+      return
+    }
+
+    if (typeof RTCPeerConnection === 'undefined') {
+      showVideoResultEl.textContent = 'Cannot show remote stream: WebRTC peer connection APIs are unavailable in this browser/runtime.'
+      return
+    }
+
+    resetPeerConnection()
+    ensurePeerConnection()
+
+    sendSignalingMessage({ type: 'viewer-ready', wants: 'video-stream' })
+    showVideoResultEl.textContent = 'Requested remote stream from original source via signaling server. Waiting for offer/track…'
+
+    showStreamTimeout = window.setTimeout(() => {
+      if (remoteTrackSeen) return
+      showVideoResultEl.textContent =
+        'Remote stream was not received yet. Ensure the original source client is connected to the same signaling server and is sending an offer/video track.'
+    }, 5000)
   }
 
   function clearDetectProbe() {
@@ -261,7 +338,6 @@ export function mountCameraStreamTab(root: HTMLElement) {
     }
   }
 
-
   function clearConnectionState(opts: { preserveConnectMessage?: boolean } = {}) {
     stopRealtimeDetect()
     streamPanelEl.classList.add('hidden')
@@ -271,6 +347,13 @@ export function mountCameraStreamTab(root: HTMLElement) {
       connectStatusTimer = null
     }
 
+    if (showStreamTimeout != null) {
+      window.clearTimeout(showStreamTimeout)
+      showStreamTimeout = null
+    }
+
+    resetPeerConnection()
+
     const socketToClose = connectedSocket
     connectedSocket = null
     if (socketToClose && socketToClose.readyState < WebSocket.CLOSING) {
@@ -279,11 +362,11 @@ export function mountCameraStreamTab(root: HTMLElement) {
       } catch {}
     }
 
-    if (stream) {
+    if (stream && streamVideoEl.srcObject !== stream) {
       for (const track of stream.getTracks()) track.stop()
       stream = null
-      streamVideoEl.srcObject = null
     }
+    streamVideoEl.srcObject = null
 
     btnConnectSignalingEl.textContent = 'Connect to signaling server'
     if (!opts.preserveConnectMessage) {
@@ -371,7 +454,6 @@ export function mountCameraStreamTab(root: HTMLElement) {
     })
   })
 
-
   btnConnectSignalingEl.addEventListener('click', () => {
     clearDetectProbe()
     if (connectedSocket) {
@@ -386,8 +468,15 @@ export function mountCameraStreamTab(root: HTMLElement) {
     const socket = openSignalingSocket(host, port)
     connectedSocket = socket
 
-    socket.addEventListener('message', () => {
+    socket.addEventListener('message', (event) => {
       observedAnyMessage = true
+      if (typeof event.data !== 'string') return
+      try {
+        const payload = JSON.parse(event.data) as SignalingMessage
+        void handleSignalingPayload(payload)
+      } catch {
+        // Non-JSON relay message; ignore.
+      }
     })
 
     socket.addEventListener('open', () => {
