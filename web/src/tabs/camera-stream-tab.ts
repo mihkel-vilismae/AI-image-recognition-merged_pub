@@ -222,7 +222,8 @@ export function mountCameraStreamTab(root: HTMLElement) {
   async function showVideoStream() {
     showVideoResultEl.textContent = ''
     if (!navigator.mediaDevices?.getUserMedia) {
-      showVideoResultEl.textContent = 'Video stream error: getUserMedia is not available in this browser environment.'
+      showVideoResultEl.textContent =
+        'Video stream could not be started: camera APIs are unavailable in this browser/runtime environment. With signaling-only mode (no full WebRTC negotiation), there is no remote media fallback.'
       return
     }
 
@@ -235,7 +236,14 @@ export function mountCameraStreamTab(root: HTMLElement) {
       streamPanelEl.classList.remove('hidden')
       showVideoResultEl.textContent = 'Video stream started and is now displayed.'
     } catch (error) {
-      showVideoResultEl.textContent = `Video stream error: ${String(error)}`
+      const msg = String(error)
+      if (msg.toLowerCase().includes('notfounderror')) {
+        showVideoResultEl.textContent =
+          'Video stream could not be started: no local camera device was found (NotFoundError). In signaling-only mode, the app currently requires a local camera to render preview.'
+        return
+      }
+
+      showVideoResultEl.textContent = `Video stream error: ${msg}`
     }
   }
 

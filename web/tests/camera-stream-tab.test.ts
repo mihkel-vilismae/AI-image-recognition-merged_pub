@@ -87,6 +87,35 @@ describe('camera stream tab', () => {
     expect(result.textContent).toBe('')
   })
 
+
+
+  it('show video stream surfaces descriptive NotFoundError guidance', async () => {
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    mountCameraStreamTab(root)
+
+    vi.stubGlobal('navigator', {
+      ...navigator,
+      mediaDevices: {
+        getUserMedia: vi.fn(async () => {
+          throw new Error('NotFoundError: Requested device not found')
+        }),
+      },
+    })
+
+    const connectBtn = root.querySelector<HTMLButtonElement>('#btnConnectSignaling')!
+    const showBtn = root.querySelector<HTMLButtonElement>('#btnShowVideoStream')!
+
+    connectBtn.click()
+    await new Promise((resolve) => setTimeout(resolve, 900))
+    expect(showBtn.disabled).toBe(false)
+
+    showBtn.click()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(root.querySelector('#showVideoResult')?.textContent).toContain('no local camera device was found')
+  })
+
   it('connect signaling does not auto-show stream and enables show-video button', async () => {
     const root = document.createElement('div')
     document.body.appendChild(root)
