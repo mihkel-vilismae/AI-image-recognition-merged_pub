@@ -69,6 +69,6 @@ describe('camera stream tab', () => {
     ws.emit('message', { data: JSON.stringify({ type: 'offer', sdp: 'v=0\nm=video 9 UDP/TLS/RTP/SAVPF 96' }) } as MessageEvent)
     await new Promise((resolve) => setTimeout(resolve, 0))
 
-    expect(root.querySelector('#cameraSignalStatus')?.textContent).toContain('video stream found')
+    expect(root.querySelector('#cameraSignalStatus')?.textContent).toContain('Video stream found')
   })
 })

@@ -16,7 +16,7 @@ function setScanIndicator(el: HTMLSpanElement, state: 'idle' | 'searching' | 'fo
 
 function pollSignalingServer(host: string, onUpdate: (text: string) => void) {
   if (typeof WebSocket === 'undefined') {
-    onUpdate('server not found')
+    onUpdate(`Signaling server not found at ws://${host}:${DEFAULT_SIGNALING_PORT} yet. Waiting for a reachable signaling endpoint.`)
     return
   }
 
@@ -28,12 +28,12 @@ function pollSignalingServer(host: string, onUpdate: (text: string) => void) {
     try {
       ws.close()
     } catch {}
-    onUpdate('server not found')
+    onUpdate(`Signaling server not found at ws://${host}:${DEFAULT_SIGNALING_PORT} yet. Waiting for a reachable signaling endpoint.`)
   }, 2500)
 
   ws.addEventListener('open', () => {
     if (finished) return
-    onUpdate('server found')
+    onUpdate('Signaling server found and reachable. Listening for incoming stream offer messages.')
   })
 
   ws.addEventListener('message', (event) => {
@@ -49,7 +49,7 @@ function pollSignalingServer(host: string, onUpdate: (text: string) => void) {
     if (hasVideoStreamSignal(payload)) {
       finished = true
       window.clearTimeout(timeout)
-      onUpdate('video stream found')
+      onUpdate('Video stream found: received a signaling message that indicates a video offer/track is available.')
       try {
         ws.close()
       } catch {}
@@ -60,7 +60,7 @@ function pollSignalingServer(host: string, onUpdate: (text: string) => void) {
     if (finished) return
     finished = true
     window.clearTimeout(timeout)
-    onUpdate('server not found')
+    onUpdate(`Signaling server not found at ws://${host}:${DEFAULT_SIGNALING_PORT} yet. Waiting for a reachable signaling endpoint.`)
   })
 
   ws.addEventListener('close', () => {
@@ -101,8 +101,8 @@ export function mountCameraStreamTab(root: HTMLElement) {
           </label>
 
           <input id="ownUrl" class="mono" value="${buildOwnDetectUrlFromHost(DEFAULT_PC_IP)}" />
-          <div id="cameraStreamStatus" class="hint mono">Idle</div>
-          <div id="cameraSignalStatus" class="hint mono">signaling: not checked</div>
+          <div id="cameraStreamStatus" class="hint mono">Idle. Select a target host and run /health check or subnet scan to discover an active server.</div>
+          <div id="cameraSignalStatus" class="hint mono">Signaling status: not checked yet. No WebRTC signaling probe has been executed.</div>
         </div>
       </section>
     </main>
@@ -138,35 +138,35 @@ export function mountCameraStreamTab(root: HTMLElement) {
   btnCheckEl.addEventListener('click', async () => {
     const host = extractIpv4HostFromText(ownUrlEl.value) ?? DEFAULT_PC_IP
     setScanIndicator(scanIndicatorEl, 'searching')
-    statusEl.textContent = 'Checking /health…'
+    statusEl.textContent = 'Checking selected host /health endpoint. Verifying server reachability and response payload…'
     const health = await checkServerHealth(host)
 
     if (health.ok) {
       ownUrlEl.value = buildOwnDetectUrlFromHost(host)
-      statusEl.textContent = health.verified ? 'own server health check passed' : 'server reachable (CORS-limited health)'
+      statusEl.textContent = health.verified ? 'Own server health check passed. The selected host is responding with a valid health payload.' : 'Server is reachable, but health verification is CORS-limited (opaque/no-cors response). Please verify from the server side if needed.'
       setScanIndicator(scanIndicatorEl, 'found')
       refreshSignalingStatus()
       return
     }
 
-    statusEl.textContent = 'own server health check failed'
+    statusEl.textContent = 'Own server health check failed. Could not verify a healthy server at the selected host.'
     setScanIndicator(scanIndicatorEl, 'failed')
   })
 
   btnScanEl.addEventListener('click', async () => {
     const seedHost = extractIpv4HostFromText(ownUrlEl.value) ?? DEFAULT_PC_IP
     setScanIndicator(scanIndicatorEl, 'searching')
-    statusEl.textContent = 'Scanning local network…'
+    statusEl.textContent = 'Scanning local subnet for an available server. This can take a few seconds while hosts are probed…'
     const found = await scanSubnetForServer(seedHost)
 
     if (!found) {
-      statusEl.textContent = 'own server scan failed'
+      statusEl.textContent = 'Local network scan finished without finding a reachable server endpoint.'
       setScanIndicator(scanIndicatorEl, 'failed')
       return
     }
 
     ownUrlEl.value = buildOwnDetectUrlFromHost(found.host)
-    statusEl.textContent = found.health.verified ? 'own server found' : 'server reachable (CORS-limited health)'
+    statusEl.textContent = found.health.verified ? 'Own server found on the local network and health endpoint verified successfully.' : 'Potential server found on the local network, but health verification is CORS-limited.'
     setScanIndicator(scanIndicatorEl, 'found')
     refreshSignalingStatus()
   })
