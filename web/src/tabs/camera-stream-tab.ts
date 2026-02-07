@@ -50,7 +50,8 @@ export function mountCameraStreamTab(root: HTMLElement) {
     <main class="grid">
       <section class="card span2">
         <p>hello camera stream</p>
-        <div class="cameraStreamControls">
+
+        <div class="cameraStreamControls cameraSection">
           <div class="cameraStreamTopRow">
             <button id="btnCheckOwnHealth" class="btn" type="button">Check selected IP /health</button>
             <button id="btnScanOwnServer" class="btn" type="button">Scan local network for server</button>
@@ -71,7 +72,10 @@ export function mountCameraStreamTab(root: HTMLElement) {
 
           <label class="field" for="ownUrl"><span>AI server /detect URL</span></label>
           <input id="ownUrl" class="mono" value="${buildOwnDetectUrlFromHost(DEFAULT_PC_IP)}" />
+          <div id="cameraStreamStatus" class="hint mono">Idle. Health/scan controls only target the AI image recognition server endpoint.</div>
+        </div>
 
+        <div class="cameraStreamControls signalingSection">
           <label class="field" for="signalingTarget"><span>Signaling server (ip:port)</span></label>
           <input id="signalingTarget" class="mono" value="${DEFAULT_PC_IP}:${DEFAULT_SIGNALING_PORT}" />
 
@@ -85,7 +89,10 @@ export function mountCameraStreamTab(root: HTMLElement) {
             <span id="connectSignalingResult" class="hint mono"></span>
           </div>
 
-          <div id="cameraStreamStatus" class="hint mono">Idle. Health/scan controls only target the AI image recognition server endpoint.</div>
+          <div class="cameraStreamTopRow">
+            <button id="btnShowVideoStream" class="btn" type="button" disabled>Show video stream</button>
+            <span id="showVideoResult" class="hint mono"></span>
+          </div>
         </div>
 
         <div id="streamPanel" class="streamPanel hidden">
@@ -117,6 +124,8 @@ export function mountCameraStreamTab(root: HTMLElement) {
   const detectSignalingResultEl = root.querySelector<HTMLSpanElement>('#detectSignalingResult')!
   const btnConnectSignalingEl = root.querySelector<HTMLButtonElement>('#btnConnectSignaling')!
   const connectSignalingResultEl = root.querySelector<HTMLSpanElement>('#connectSignalingResult')!
+  const btnShowVideoStreamEl = root.querySelector<HTMLButtonElement>('#btnShowVideoStream')!
+  const showVideoResultEl = root.querySelector<HTMLSpanElement>('#showVideoResult')!
   const streamPanelEl = root.querySelector<HTMLDivElement>('#streamPanel')!
   const streamVideoEl = root.querySelector<HTMLVideoElement>('#streamVideo')!
   const streamOverlayEl = root.querySelector<HTMLCanvasElement>('#streamOverlay')!
@@ -207,16 +216,24 @@ export function mountCameraStreamTab(root: HTMLElement) {
     realtimeResultEl.textContent = `Realtime frame analyzed. Detected ${boxes.length} boxes from AI image recognition server.`
   }
 
-  async function ensurePreviewStream() {
-    if (stream) return
+  async function showVideoStream() {
+    showVideoResultEl.textContent = ''
     if (!navigator.mediaDevices?.getUserMedia) {
-      connectSignalingResultEl.textContent = 'Connected to signaling server, but local preview is unavailable in this browser environment.'
+      showVideoResultEl.textContent = 'Video stream error: getUserMedia is not available in this browser environment.'
       return
     }
 
-    stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
-    streamVideoEl.srcObject = stream
-    await streamVideoEl.play().catch(() => {})
+    try {
+      if (!stream) {
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+      }
+      streamVideoEl.srcObject = stream
+      await streamVideoEl.play()
+      streamPanelEl.classList.remove('hidden')
+      showVideoResultEl.textContent = 'Video stream started and is now displayed.'
+    } catch (error) {
+      showVideoResultEl.textContent = `Video stream error: ${String(error)}`
+    }
   }
 
   function clearConnectionState() {
@@ -238,6 +255,8 @@ export function mountCameraStreamTab(root: HTMLElement) {
 
     btnConnectSignalingEl.textContent = 'Connect to signaling server'
     connectSignalingResultEl.textContent = ''
+    btnShowVideoStreamEl.disabled = true
+    showVideoResultEl.textContent = ''
   }
 
   btnCheckEl.addEventListener('click', async () => {
@@ -314,7 +333,7 @@ export function mountCameraStreamTab(root: HTMLElement) {
     })
   })
 
-  btnConnectSignalingEl.addEventListener('click', async () => {
+  btnConnectSignalingEl.addEventListener('click', () => {
     if (connectedSocket) {
       clearConnectionState()
       return
@@ -323,17 +342,25 @@ export function mountCameraStreamTab(root: HTMLElement) {
     const { host, port } = parseSignalingTarget(signalingTargetEl.value)
     connectSignalingResultEl.textContent = `Connecting to signaling server at ws://${host}:${port}…`
 
+    let observedAnyMessage = false
     const socket = openSignalingSocket(host, port)
     connectedSocket = socket
 
-    socket.addEventListener('open', async () => {
+    socket.addEventListener('message', () => {
+      observedAnyMessage = true
+    })
+
+    socket.addEventListener('open', () => {
       if (connectedSocket !== socket) return
-      connectSignalingResultEl.textContent = `Connected to signaling server at ws://${host}:${port}.`
       btnConnectSignalingEl.textContent = 'Disconnect from signaling server'
-      streamPanelEl.classList.remove('hidden')
-      await ensurePreviewStream().catch(() => {
-        connectSignalingResultEl.textContent = 'Connected to signaling server, but failed to initialize preview stream in this environment.'
-      })
+
+      window.setTimeout(() => {
+        if (connectedSocket !== socket) return
+        connectSignalingResultEl.textContent = observedAnyMessage
+          ? `Signaling connection is ok at ws://${host}:${port}. Other clients are likely already connected (messages observed).`
+          : `Signaling connection is ok at ws://${host}:${port}. This appears to be the only connected client right now.`
+        btnShowVideoStreamEl.disabled = false
+      }, 800)
     })
 
     socket.addEventListener('close', () => {
@@ -346,6 +373,10 @@ export function mountCameraStreamTab(root: HTMLElement) {
       connectSignalingResultEl.textContent = `Failed to connect to signaling server at ws://${host}:${port}.`
       clearConnectionState()
     })
+  })
+
+  btnShowVideoStreamEl.addEventListener('click', () => {
+    void showVideoStream()
   })
 
   btnRealtimeDetectStreamEl.addEventListener('click', () => {

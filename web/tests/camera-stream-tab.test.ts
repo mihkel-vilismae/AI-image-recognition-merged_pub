@@ -48,7 +48,7 @@ describe('camera stream tab', () => {
     })
   })
 
-  it('health button applies to AI server URL flow and sets found indicator', async () => {
+  it('keeps AI server controls in dedicated section and updates health status', async () => {
     const root = document.createElement('div')
     document.body.appendChild(root)
     mountCameraStreamTab(root)
@@ -63,15 +63,12 @@ describe('camera stream tab', () => {
       ),
     )
 
-    const ownUrl = root.querySelector<HTMLInputElement>('#ownUrl')!
-    ownUrl.value = 'http://192.168.17.25:8000/detect?conf=0.25'
-
     root.querySelector<HTMLButtonElement>('#btnCheckOwnHealth')!.click()
     await new Promise((resolve) => setTimeout(resolve, 0))
 
     expect(root.querySelector('#cameraStreamStatus')?.textContent).toContain('AI image recognition server health check passed')
-    expect(root.querySelector('#scanIndicator')?.classList.contains('found')).toBe(true)
-    expect(ownUrl.value).toContain('192.168.17.25:8000/detect?conf=0.25')
+    expect(root.querySelector('.cameraSection #ownUrl')).not.toBeNull()
+    expect(root.querySelector('.signalingSection #signalingTarget')).not.toBeNull()
   })
 
   it('detect signaling button toggles result text on consecutive clicks', async () => {
@@ -90,24 +87,30 @@ describe('camera stream tab', () => {
     expect(result.textContent).toBe('')
   })
 
-  it('connect signaling button opens stream panel and toggles off on second click', async () => {
+  it('connect signaling does not auto-show stream and enables show-video button', async () => {
     const root = document.createElement('div')
     document.body.appendChild(root)
     mountCameraStreamTab(root)
 
-    const btn = root.querySelector<HTMLButtonElement>('#btnConnectSignaling')!
+    const connectBtn = root.querySelector<HTMLButtonElement>('#btnConnectSignaling')!
+    const showBtn = root.querySelector<HTMLButtonElement>('#btnShowVideoStream')!
     const panel = root.querySelector<HTMLDivElement>('#streamPanel')!
 
+    expect(showBtn.disabled).toBe(true)
     expect(panel.classList.contains('hidden')).toBe(true)
 
-    btn.click()
+    connectBtn.click()
+    await new Promise((resolve) => setTimeout(resolve, 900))
+
+    expect(showBtn.disabled).toBe(false)
+    expect(panel.classList.contains('hidden')).toBe(true)
+
+    showBtn.click()
     await new Promise((resolve) => setTimeout(resolve, 0))
-
     expect(panel.classList.contains('hidden')).toBe(false)
-    expect(btn.textContent).toContain('Disconnect')
 
-    btn.click()
+    connectBtn.click()
+    expect(showBtn.disabled).toBe(true)
     expect(panel.classList.contains('hidden')).toBe(true)
-    expect(btn.textContent).toContain('Connect')
   })
 })

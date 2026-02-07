@@ -3,6 +3,15 @@
   gap: 10px;
 }
 
+.cameraSection {
+  margin-bottom: 12px;
+}
+
+.signalingSection {
+  border-top: 1px solid rgba(152, 167, 194, 0.25);
+  padding-top: 12px;
+}
+
 .cameraStreamTopRow {
   display: flex;
   align-items: center;
