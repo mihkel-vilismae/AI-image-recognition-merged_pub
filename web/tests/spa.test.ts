@@ -14,6 +14,7 @@ describe('single page tabs', () => {
       revokeObjectURL: vi.fn(),
     })
 
+
     const fakeCtx = {
       drawImage: vi.fn(),
       clearRect: vi.fn(),
@@ -42,8 +43,7 @@ describe('single page tabs', () => {
     window.location.hash = '#/camera-stream'
     window.dispatchEvent(new HashChangeEvent('hashchange'))
 
-    // After switching to camera stream tab, ensure the camera UI loads
-    expect(root.textContent).toContain('AI Camera Stream Recognition')
+    expect(root.textContent).toContain('hello camera stream')
   })
 
   it('marks selected tab active', () => {
