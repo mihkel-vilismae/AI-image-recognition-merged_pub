@@ -59,6 +59,17 @@ export function mountCameraStreamTab(root: HTMLElement) {
       <section class="card span2">
         <p>hello camera stream</p>
 
+        <div id="streamPanel" class="streamPanel streamPanel--top">
+          <div class="videoWrap cameraPreviewWrap">
+            <video id="streamVideo" class="video" autoplay muted playsinline></video>
+            <canvas id="streamOverlay" class="videoOverlay"></canvas>
+          </div>
+          <div class="cameraStreamTopRow">
+            <button id="btnRealtimeDetectStream" class="btn" type="button">Detect frames in real time</button>
+            <span id="realtimeResult" class="hint mono"></span>
+          </div>
+        </div>
+
         <div class="cameraStreamControls cameraSection">
           <div class="cameraStreamTopRow">
             <button id="btnCheckOwnHealth" class="btn" type="button">Check selected IP /health</button>
@@ -107,6 +118,7 @@ export function mountCameraStreamTab(root: HTMLElement) {
         <div class="cameraStreamControls signalingSection">
           <div class="cameraStreamTopRow">
             <button id="btnCopyReceiverLogs" class="btn" type="button">Copy logs</button>
+            <button id="btnClearReceiverLogs" class="btn" type="button">Clear logs</button>
           </div>
           <label class="field"><span>Receiver log</span></label>
           <pre id="receiverLog" class="json mono"></pre>
@@ -114,16 +126,6 @@ export function mountCameraStreamTab(root: HTMLElement) {
           <pre id="receiverError" class="json mono"></pre>
         </div>
 
-        <div id="streamPanel" class="streamPanel hidden">
-          <div class="videoWrap cameraPreviewWrap">
-            <video id="streamVideo" class="video" autoplay muted playsinline></video>
-            <canvas id="streamOverlay" class="videoOverlay"></canvas>
-          </div>
-          <div class="cameraStreamTopRow">
-            <button id="btnRealtimeDetectStream" class="btn" type="button">Detect frames in real time</button>
-            <span id="realtimeResult" class="hint mono"></span>
-          </div>
-        </div>
       </section>
     </main>
   </div>
@@ -153,6 +155,7 @@ export function mountCameraStreamTab(root: HTMLElement) {
   const receiverLogEl = root.querySelector<HTMLPreElement>('#receiverLog')!
   const receiverErrorEl = root.querySelector<HTMLPreElement>('#receiverError')!
   const btnCopyReceiverLogsEl = root.querySelector<HTMLButtonElement>('#btnCopyReceiverLogs')!
+  const btnClearReceiverLogsEl = root.querySelector<HTMLButtonElement>('#btnClearReceiverLogs')!
   const overlayCtx = streamOverlayEl.getContext('2d')
 
   const logger = createUiLogger(receiverLogEl, receiverErrorEl, 'PC')
@@ -293,7 +296,6 @@ export function mountCameraStreamTab(root: HTMLElement) {
       stream = event.streams[0] ?? null
       if (stream) {
         streamVideoEl.srcObject = stream
-        streamPanelEl.classList.remove('hidden')
         showVideoResultEl.textContent = 'Remote video stream received from the original source and displayed.'
       }
       logger.log('WEBRTC', 'remote track attached', { hasStream: Boolean(stream) })
@@ -388,7 +390,6 @@ export function mountCameraStreamTab(root: HTMLElement) {
 
   function clearConnectionState(opts: { preserveConnectMessage?: boolean } = {}) {
     stopRealtimeDetect()
-    streamPanelEl.classList.add('hidden')
 
     if (connectStatusTimer != null) {
       window.clearTimeout(connectStatusTimer)
@@ -575,6 +576,12 @@ export function mountCameraStreamTab(root: HTMLElement) {
     const text = `LOG\n${receiverLogEl.textContent || ''}\n\nERROR\n${receiverErrorEl.textContent || ''}`
     if (!navigator.clipboard?.writeText) return
     void navigator.clipboard.writeText(text)
+  })
+
+  btnClearReceiverLogsEl.addEventListener('click', () => {
+    receiverLogEl.textContent = ''
+    receiverErrorEl.textContent = ''
+    logger.log('UI', 'logs cleared')
   })
 
   btnRealtimeDetectStreamEl.addEventListener('click', () => {

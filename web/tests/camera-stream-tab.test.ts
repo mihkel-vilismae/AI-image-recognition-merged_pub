@@ -107,6 +107,32 @@ describe('camera stream tab', () => {
     expect(result.textContent).toBe('')
   })
 
+
+  it('renders video panel above logs and clear logs clears both panes without disconnect', async () => {
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    mountCameraStreamTab(root)
+
+    const streamPanel = root.querySelector('#streamPanel') as HTMLElement
+    const logsPanel = root.querySelector('#receiverLog') as HTMLElement
+    expect(streamPanel.compareDocumentPosition(logsPanel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    const connectBtn = root.querySelector<HTMLButtonElement>('#btnConnectSignaling')!
+    connectBtn.click()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const ws = FakeWebSocket.instances.at(-1)!
+
+    const logEl = root.querySelector<HTMLPreElement>('#receiverLog')!
+    const errEl = root.querySelector<HTMLPreElement>('#receiverError')!
+    logEl.textContent = 'abc'
+    errEl.textContent = 'def'
+
+    root.querySelector<HTMLButtonElement>('#btnClearReceiverLogs')!.click()
+    expect(logEl.textContent).toContain('logs cleared')
+    expect(errEl.textContent).toBe('')
+    expect(ws.readyState).toBe(1)
+  })
+
   it('requests remote stream and displays it when offer/track arrive', async () => {
     const root = document.createElement('div')
     document.body.appendChild(root)
@@ -134,7 +160,6 @@ describe('camera stream tab', () => {
     const stream = { getTracks: () => [] } as unknown as MediaStream
     FakeRTCPeerConnection.instances[0]?.ontrack?.({ streams: [stream] })
 
-    expect(panel.classList.contains('hidden')).toBe(false)
     expect(root.querySelector('#showVideoResult')?.textContent).toContain('Remote video stream received')
   })
 })

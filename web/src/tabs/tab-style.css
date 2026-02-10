@@ -220,3 +220,20 @@
   padding: 6px;
   text-align: left;
 }
+
+
+.streamPanel--top {
+  margin-top: 0;
+  margin-bottom: 12px;
+}
+
+.cameraPreviewWrap {
+  max-width: 960px;
+  max-height: min(56vh, 540px);
+}
+
+#receiverLog,
+#receiverError {
+  max-height: 180px;
+  overflow: auto;
+}
