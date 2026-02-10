@@ -1,0 +1,93 @@
+.cameraStreamControls {
+  display: grid;
+  gap: 10px;
+}
+
+.cameraSection {
+  margin-bottom: 12px;
+}
+
+.signalingSection {
+  border-top: 1px solid rgba(152, 167, 194, 0.25);
+  padding-top: 12px;
+}
+
+.cameraStreamTopRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.cameraRow {
+  display: grid;
+  grid-template-columns: 220px 1fr auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.scanDot {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  display: inline-block;
+}
+
+.scanDot.idle {
+  background: #000;
+}
+
+.scanDot.searching {
+  background: #f5c451;
+}
+
+.scanDot.found {
+  background: #39d98a;
+}
+
+.scanDot.failed {
+  background: #ff5c7a;
+}
+
+.streamPanel {
+  margin-top: 14px;
+  border-top: 1px solid rgba(152, 167, 194, 0.25);
+  padding-top: 14px;
+}
+
+.cameraPreviewWrap {
+  max-width: 760px;
+}
+
+
+.webrtcServerGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.webrtcServerPanel {
+  border: 1px solid rgba(152, 167, 194, 0.25);
+  border-radius: 12px;
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.webrtcServerPanel h2,
+.webrtcServerChecklist h2 {
+  font-size: 15px;
+  margin: 0 0 10px;
+}
+
+.webrtcServerChecklist {
+  margin-top: 14px;
+  border-top: 1px solid rgba(152, 167, 194, 0.25);
+  padding-top: 12px;
+}
+
+@media (max-width: 980px) {
+  .webrtcServerGrid {
+    grid-template-columns: 1fr;
+  }
+}
