@@ -397,7 +397,7 @@ def create_app() -> FastAPI:
     def health() -> Dict[str, str | bool]:
         return {
             "ok": True,
-            "service": "ai-image-recognition",
+            "service": "ai-server",
             "time": datetime.utcnow().isoformat() + "Z",
             "version": "1.0",
         }
