@@ -7,6 +7,7 @@ import {
   extractIpv4HostFromText,
   scanSubnetForServer,
 } from './camera-stream-utils'
+import { emitAppEvent } from '../common'
 
 type DetectBox = { name?: string; score?: number; xyxy?: number[] }
 
@@ -267,6 +268,7 @@ export function mountCameraStreamTab(root: HTMLElement) {
         streamPanelEl.classList.remove('hidden')
         showVideoResultEl.textContent = 'Remote video stream received from the original source and displayed.'
       }
+      emitAppEvent('REMOTE_TRACK_ATTACHED', { hasStream: Boolean(stream) })
       remoteTrackSeen = true
       if (showStreamTimeout != null) {
         window.clearTimeout(showStreamTimeout)
@@ -282,12 +284,22 @@ export function mountCameraStreamTab(root: HTMLElement) {
     if (!message || typeof message !== 'object') return
 
     if (message.type === 'offer' && typeof message.sdp === 'string') {
-      const pc = ensurePeerConnection()
-      await pc.setRemoteDescription({ type: 'offer', sdp: message.sdp })
-      const answer = await pc.createAnswer()
-      await pc.setLocalDescription(answer)
-      sendSignalingMessage({ type: 'answer', sdp: answer.sdp })
-      showVideoResultEl.textContent = 'Received remote offer from original source; sent answer. Waiting for remote video track…'
+      try {
+        const pc = ensurePeerConnection()
+        await pc.setRemoteDescription({ type: 'offer', sdp: message.sdp })
+        const answer = await pc.createAnswer()
+        await pc.setLocalDescription(answer)
+        sendSignalingMessage({ type: 'answer', sdp: answer.sdp })
+        showVideoResultEl.textContent = 'Received remote offer from original source; sent answer. Waiting for remote video track…'
+        emitAppEvent('OFFER_RECEIVED', { phase: 'offer_applied' })
+      } catch (error) {
+        const messageText = `Failed to process remote offer: ${String(error)}`
+        showVideoResultEl.textContent = messageText
+        emitAppEvent('REMOTE_TRACK_FAILED', {
+          message: messageText,
+          details: { error: String(error) },
+        })
+      }
       return
     }
 
@@ -315,12 +327,17 @@ export function mountCameraStreamTab(root: HTMLElement) {
     ensurePeerConnection()
 
     sendSignalingMessage({ type: 'viewer-ready', wants: 'video-stream' })
+    emitAppEvent('VIEWER_READY_SENT', { phase: 'viewer_ready_sent' })
     showVideoResultEl.textContent = 'Requested remote stream from original source via signaling server. Waiting for offer/track…'
 
     showStreamTimeout = window.setTimeout(() => {
       if (remoteTrackSeen) return
       showVideoResultEl.textContent =
         'Remote stream was not received yet. Ensure the original source client is connected to the same signaling server and is sending an offer/video track.'
+      emitAppEvent('REMOTE_TRACK_FAILED', {
+        message: 'Remote stream timeout: no track received after viewer-ready.',
+        details: { timeoutMs: 5000 },
+      })
     }, 5000)
   }
 
@@ -463,6 +480,7 @@ export function mountCameraStreamTab(root: HTMLElement) {
 
     const { host, port } = parseSignalingTarget(signalingTargetEl.value)
     connectSignalingResultEl.textContent = `Connecting to signaling server at ws://${host}:${port}…`
+    emitAppEvent('SIGNALING_CONNECTING', { host, port })
 
     let observedAnyMessage = false
     const socket = openSignalingSocket(host, port)
@@ -482,6 +500,7 @@ export function mountCameraStreamTab(root: HTMLElement) {
     socket.addEventListener('open', () => {
       if (connectedSocket !== socket) return
       btnConnectSignalingEl.textContent = 'Disconnect from signaling server'
+      emitAppEvent('SIGNALING_CONNECTED', { host, port })
 
       connectStatusTimer = window.setTimeout(() => {
         if (connectedSocket !== socket) return
@@ -500,6 +519,10 @@ export function mountCameraStreamTab(root: HTMLElement) {
     socket.addEventListener('error', () => {
       if (connectedSocket !== socket) return
       connectSignalingResultEl.textContent = `Failed to connect to signaling server at ws://${host}:${port}.`
+      emitAppEvent('SIGNALING_FAILED', {
+        message: `Failed to connect to signaling server at ws://${host}:${port}.`,
+        details: { host, port },
+      })
       clearConnectionState({ preserveConnectMessage: true })
     })
   })

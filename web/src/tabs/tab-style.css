@@ -125,3 +125,47 @@
   gap: 10px;
   margin-bottom: 10px;
 }
+
+.webrtcStepLine {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.webrtcStepLine--clickable {
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-style: dashed;
+}
+
+.step-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.step-dot--idle {
+  background: #000;
+}
+
+.step-dot--working {
+  background: #f5c451;
+}
+
+.step-dot--ok {
+  background: #39d98a;
+}
+
+.step-dot--fail {
+  background: #ff5c7a;
+}
+
+.webrtcCodeActions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}

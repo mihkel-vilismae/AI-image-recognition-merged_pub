@@ -15,3 +15,27 @@ export function parseRouteFromHash(hash: string): AppRoute {
   if (route === 'webrtc-server') return 'webrtc-server'
   return DEFAULT_ROUTE
 }
+
+export type AppEventName =
+  | 'SIGNALING_CONNECTING'
+  | 'SIGNALING_CONNECTED'
+  | 'SIGNALING_FAILED'
+  | 'VIEWER_READY_SENT'
+  | 'OFFER_RECEIVED'
+  | 'REMOTE_TRACK_ATTACHED'
+  | 'REMOTE_TRACK_FAILED'
+
+const appEventBus = new EventTarget()
+
+export function emitAppEvent(name: AppEventName, detail: Record<string, unknown> = {}) {
+  appEventBus.dispatchEvent(new CustomEvent(name, { detail }))
+}
+
+export function onAppEvent(name: AppEventName, handler: (detail: Record<string, unknown>) => void): () => void {
+  const listener = (event: Event) => {
+    const custom = event as CustomEvent<Record<string, unknown>>
+    handler(custom.detail ?? {})
+  }
+  appEventBus.addEventListener(name, listener)
+  return () => appEventBus.removeEventListener(name, listener)
+}
