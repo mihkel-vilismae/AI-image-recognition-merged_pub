@@ -14,6 +14,14 @@ function makeClipboardEventWithImage(file: File) {
 }
 
 describe('initApp', () => {
+  it('uses same-origin /api backend by default to avoid dev-time CORS issues', () => {
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+
+    initApp(root)
+
+    expect(root.querySelector('#backendUrl')?.textContent).toBe('/api')
+  })
   it('renders a videos link in image page header', () => {
     const root = document.createElement('div')
     document.body.appendChild(root)
@@ -21,7 +29,7 @@ describe('initApp', () => {
     initApp(root, { apiBase: 'http://localhost:8000' })
 
     const link = root.querySelector<HTMLAnchorElement>('.pageLinks a')
-    expect(link?.getAttribute('href')).toBe('/videos.html')
+    expect(link?.getAttribute('href')).toBe('#/videos')
   })
 
   it('enables Detect button after selecting a file via onPickFile()', async () => {
