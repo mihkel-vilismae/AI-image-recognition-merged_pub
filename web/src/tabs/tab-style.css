@@ -237,3 +237,11 @@
   max-height: 180px;
   overflow: auto;
 }
+
+.systemStatus--paused {
+  background: #6b7280;
+}
+
+.systemTable input[type="checkbox"] {
+  transform: scale(1.05);
+}

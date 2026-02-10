@@ -91,6 +91,16 @@ describe('camera stream tab', () => {
     expect(root.querySelector('.signalingSection #signalingTarget')).not.toBeNull()
   })
 
+
+  it('uses localhost defaults for signaling and ai detect url', () => {
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    mountCameraStreamTab(root)
+
+    expect(root.querySelector<HTMLInputElement>('#signalingTarget')?.value).toBe('ws://localhost:8765')
+    expect(root.querySelector<HTMLInputElement>('#ownUrl')?.value).toBe('http://localhost:5175/api/detect?conf=0.25')
+  })
+
   it('detect signaling button toggles result text on consecutive clicks', async () => {
     const root = document.createElement('div')
     document.body.appendChild(root)
@@ -131,6 +141,16 @@ describe('camera stream tab', () => {
     expect(logEl.textContent).toContain('logs cleared')
     expect(errEl.textContent).toBe('')
     expect(ws.readyState).toBe(1)
+  })
+
+
+  it('keeps ai detect input default on /api/detect path', () => {
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    mountCameraStreamTab(root)
+
+    const ownUrl = root.querySelector<HTMLInputElement>('#ownUrl')!.value
+    expect(ownUrl.includes('/api/detect?conf=')).toBe(true)
   })
 
   it('requests remote stream and displays it when offer/track arrive', async () => {

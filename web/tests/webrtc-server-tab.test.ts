@@ -6,12 +6,21 @@ import { initSinglePageApp } from '../src/main'
 describe('webrtc server tab', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
+    localStorage.clear()
     document.body.innerHTML = ''
     window.location.hash = '#/webrtc-server'
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 })))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_input: RequestInfo | URL) =>
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    )
   })
 
-  it('renders two open code buttons and status dots with health urls', async () => {
+  it('renders two open code buttons, health toggles and status dots with health urls', async () => {
     const root = document.createElement('div')
     root.id = 'app'
     document.body.appendChild(root)
@@ -26,9 +35,53 @@ describe('webrtc server tab', () => {
 
     const healthCells = Array.from(root.querySelectorAll<HTMLElement>('#systemPanel [data-field="healthUrl"]')).map((el) => el.textContent || '')
     expect(healthCells.every((cell) => cell.trim().length > 0)).toBe(true)
+    expect(root.querySelectorAll('#systemPanel [data-health-toggle]').length).toBe(4)
 
     root.querySelector<HTMLButtonElement>('[data-action="open-phone"]')?.click()
     expect(root.querySelector('#btnCopyHtmlTop')?.classList.contains('hidden')).toBe(false)
+  })
+
+  it('supports disabling and persisting per-row health polling state', async () => {
+    const root = document.createElement('div')
+    root.id = 'app'
+    document.body.appendChild(root)
+
+    initSinglePageApp(root)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const relayToggle = root.querySelector<HTMLInputElement>('[data-health-toggle="relay"]')!
+    relayToggle.checked = false
+    relayToggle.dispatchEvent(new Event('change'))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const relayStatus = root.querySelector<HTMLElement>('[data-component="relay"] [data-field="status"]')!
+    expect(relayStatus.classList.contains('systemStatus--paused')).toBe(true)
+
+    const root2 = document.createElement('div')
+    root2.id = 'app2'
+    document.body.appendChild(root2)
+    initSinglePageApp(root2)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    window.location.hash = '#/webrtc-server'
+    window.dispatchEvent(new HashChangeEvent('hashchange'))
+
+    const relayToggleReloaded = root2.querySelector<HTMLInputElement>('[data-health-toggle="relay"]')!
+    expect(relayToggleReloaded.checked).toBe(false)
+  })
+
+  it('treats non-json health responses as unhealthy', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('<html>nope</html>', { status: 200 })))
+
+    const root = document.createElement('div')
+    root.id = 'app'
+    document.body.appendChild(root)
+
+    initSinglePageApp(root)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const backendStatus = root.querySelector<HTMLElement>('[data-component="backend"] [data-field="status"]')!
+    expect(backendStatus.classList.contains('systemStatus--offline') || backendStatus.classList.contains('systemStatus--paused')).toBe(true)
   })
 
   it('updates dot colors based on emitted events', () => {

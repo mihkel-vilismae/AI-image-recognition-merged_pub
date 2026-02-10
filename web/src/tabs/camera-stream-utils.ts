@@ -1,11 +1,11 @@
-export const DEFAULT_PC_IP = '192.168.17.92'
-export const DEFAULT_SERVER_PORT = 8000
+export const DEFAULT_PC_IP = 'localhost'
+export const DEFAULT_SERVER_PORT = 5175
 export const DEFAULT_SIGNALING_PORT = 8765
 
 export function buildOwnDetectUrlFromHost(host: string, conf = 0.25): string {
   const safeHost = typeof host === 'string' ? host.trim() : ''
   if (!safeHost) return ''
-  return `http://${safeHost}:${DEFAULT_SERVER_PORT}/detect?conf=${conf}`
+  return `http://${safeHost}:${DEFAULT_SERVER_PORT}/api/detect?conf=${conf}`
 }
 
 export function extractIpv4HostFromText(input: string): string | null {

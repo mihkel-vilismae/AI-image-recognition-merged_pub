@@ -29,17 +29,17 @@ function setScanIndicator(el: HTMLSpanElement, state: 'idle' | 'searching' | 'fo
 
 function parseSignalingTarget(input: string): { host: string; port: number } {
   const trimmed = (input || '').trim()
-  if (!trimmed) return { host: DEFAULT_PC_IP, port: DEFAULT_SIGNALING_PORT }
+  if (!trimmed) return { host: 'localhost', port: DEFAULT_SIGNALING_PORT }
 
   const withProtocol = trimmed.includes('://') ? trimmed : `ws://${trimmed}`
   try {
     const parsed = new URL(withProtocol)
     return {
-      host: parsed.hostname || DEFAULT_PC_IP,
+      host: parsed.hostname || 'localhost',
       port: Number(parsed.port || String(DEFAULT_SIGNALING_PORT)),
     }
   } catch {
-    return { host: DEFAULT_PC_IP, port: DEFAULT_SIGNALING_PORT }
+    return { host: 'localhost', port: DEFAULT_SIGNALING_PORT }
   }
 }
 
@@ -96,7 +96,7 @@ export function mountCameraStreamTab(root: HTMLElement) {
 
         <div class="cameraStreamControls signalingSection">
           <label class="field" for="signalingTarget"><span>Signaling server (ip:port)</span></label>
-          <input id="signalingTarget" class="mono" value="${DEFAULT_PC_IP}:${DEFAULT_SIGNALING_PORT}" />
+          <input id="signalingTarget" class="mono" value="ws://localhost:${DEFAULT_SIGNALING_PORT}" />
 
           <div class="cameraStreamTopRow">
             <button id="btnDetectSignaling" class="btn" type="button">Detect signaling server</button>
@@ -244,13 +244,16 @@ export function mountCameraStreamTab(root: HTMLElement) {
     const fd = new FormData()
     fd.append('file', blob, 'stream-frame.jpg')
 
-    const response = await fetch(`${ownUrlEl.value.trim().split('?')[0]}?conf=${encodeURIComponent(conf)}`, {
+    const detectUrl = `${ownUrlEl.value.trim().split('?')[0]}?conf=${encodeURIComponent(conf)}`
+    logger.log('DETECT', 'invoking detect', { url: detectUrl })
+    const response = await fetch(detectUrl, {
       method: 'POST',
       body: fd,
     })
 
     if (!response.ok) {
       realtimeResultEl.textContent = `Frame detect failed: HTTP ${response.status}`
+      logger.error('DETECT', 'detect failed', { status: response.status })
       return
     }
 
@@ -258,6 +261,7 @@ export function mountCameraStreamTab(root: HTMLElement) {
     const boxes = data.boxes ?? []
     drawBoxes(boxes)
     realtimeResultEl.textContent = `Realtime frame analyzed. Detected ${boxes.length} boxes from AI image recognition server.`
+    logger.log('DETECT', 'detect success', { boxes: boxes.length })
   }
 
   function resetPeerConnection() {
