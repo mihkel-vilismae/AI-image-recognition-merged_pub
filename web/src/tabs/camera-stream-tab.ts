@@ -8,6 +8,7 @@ import {
   scanSubnetForServer,
 } from './camera-stream-utils'
 import { emitAppEvent } from '../common'
+import { createUiLogger } from './webrtc-logger'
 
 type DetectBox = { name?: string; score?: number; xyxy?: number[] }
 
@@ -102,6 +103,17 @@ export function mountCameraStreamTab(root: HTMLElement) {
           </div>
         </div>
 
+
+        <div class="cameraStreamControls signalingSection">
+          <div class="cameraStreamTopRow">
+            <button id="btnCopyReceiverLogs" class="btn" type="button">Copy logs</button>
+          </div>
+          <label class="field"><span>Receiver log</span></label>
+          <pre id="receiverLog" class="json mono"></pre>
+          <label class="field"><span>Receiver errors</span></label>
+          <pre id="receiverError" class="json mono"></pre>
+        </div>
+
         <div id="streamPanel" class="streamPanel hidden">
           <div class="videoWrap cameraPreviewWrap">
             <video id="streamVideo" class="video" autoplay muted playsinline></video>
@@ -138,7 +150,13 @@ export function mountCameraStreamTab(root: HTMLElement) {
   const streamOverlayEl = root.querySelector<HTMLCanvasElement>('#streamOverlay')!
   const btnRealtimeDetectStreamEl = root.querySelector<HTMLButtonElement>('#btnRealtimeDetectStream')!
   const realtimeResultEl = root.querySelector<HTMLSpanElement>('#realtimeResult')!
+  const receiverLogEl = root.querySelector<HTMLPreElement>('#receiverLog')!
+  const receiverErrorEl = root.querySelector<HTMLPreElement>('#receiverError')!
+  const btnCopyReceiverLogsEl = root.querySelector<HTMLButtonElement>('#btnCopyReceiverLogs')!
   const overlayCtx = streamOverlayEl.getContext('2d')
+
+  const logger = createUiLogger(receiverLogEl, receiverErrorEl, 'PC')
+  logger.log('BOOT', 'camera stream tab mounted', { href: window.location.href, hostname: window.location.hostname || 'unknown' })
 
   let connectedSocket: WebSocket | null = null
   let detectProbeSocket: WebSocket | null = null
@@ -151,6 +169,7 @@ export function mountCameraStreamTab(root: HTMLElement) {
   let showStreamTimeout: number | null = null
 
   function emitWebrtcProgressEvent(name: 'SIGNALING_CONNECTING' | 'SIGNALING_CONNECTED' | 'SIGNALING_FAILED' | 'VIEWER_READY_SENT' | 'OFFER_RECEIVED' | 'REMOTE_TRACK_ATTACHED' | 'REMOTE_TRACK_FAILED', detail: Record<string, unknown> = {}) {
+    logger.log('EVENT', 'emit webrtc progress', { name, detail })
     const prefixed = `WEBRTC_${name}` as const
     emitAppEvent(prefixed, detail)
     if (name === 'VIEWER_READY_SENT') emitAppEvent('WEBRTC_VIEWER_READY', detail)
@@ -277,6 +296,7 @@ export function mountCameraStreamTab(root: HTMLElement) {
         streamPanelEl.classList.remove('hidden')
         showVideoResultEl.textContent = 'Remote video stream received from the original source and displayed.'
       }
+      logger.log('WEBRTC', 'remote track attached', { hasStream: Boolean(stream) })
       emitWebrtcProgressEvent('REMOTE_TRACK_ATTACHED', { hasStream: Boolean(stream) })
       remoteTrackSeen = true
       if (showStreamTimeout != null) {
@@ -300,6 +320,7 @@ export function mountCameraStreamTab(root: HTMLElement) {
         await pc.setLocalDescription(answer)
         sendSignalingMessage({ type: 'answer', sdp: answer.sdp })
         showVideoResultEl.textContent = 'Received remote offer from original source; sent answer. Waiting for remote video track…'
+        logger.log('WEBRTC', 'offer applied and answer sent')
         emitWebrtcProgressEvent('OFFER_RECEIVED', { phase: 'offer_applied' })
       } catch (error) {
         const messageText = `Failed to process remote offer: ${String(error)}`
@@ -336,6 +357,7 @@ export function mountCameraStreamTab(root: HTMLElement) {
     ensurePeerConnection()
 
     sendSignalingMessage({ type: 'viewer-ready', wants: 'video-stream' })
+    logger.log('WEBRTC', 'viewer-ready sent')
     emitWebrtcProgressEvent('VIEWER_READY_SENT', { phase: 'viewer_ready_sent' })
     showVideoResultEl.textContent = 'Requested remote stream from original source via signaling server. Waiting for offer/track…'
 
@@ -449,6 +471,7 @@ export function mountCameraStreamTab(root: HTMLElement) {
 
     const { host, port } = parseSignalingTarget(signalingTargetEl.value)
     detectSignalingResultEl.textContent = `Detecting signaling server at ws://${host}:${port}…`
+    logger.log('WS_DETECT', 'probe start', { host, port })
 
     let done = false
     const socket = openSignalingSocket(host, port)
@@ -457,6 +480,7 @@ export function mountCameraStreamTab(root: HTMLElement) {
       if (done) return
       done = true
       detectSignalingResultEl.textContent = `No signaling server detected at ws://${host}:${port}.`
+      logger.warn('WS_DETECT', 'probe failed', { host, port })
       clearDetectProbe()
     }, 2500)
 
@@ -464,6 +488,7 @@ export function mountCameraStreamTab(root: HTMLElement) {
       if (done) return
       done = true
       detectSignalingResultEl.textContent = `Signaling server detected at ws://${host}:${port}.`
+      logger.log('WS_DETECT', 'probe success', { host, port })
       clearDetectProbe()
     })
 
@@ -471,6 +496,7 @@ export function mountCameraStreamTab(root: HTMLElement) {
       if (done) return
       done = true
       detectSignalingResultEl.textContent = `No signaling server detected at ws://${host}:${port}.`
+      logger.warn('WS_DETECT', 'probe failed', { host, port })
       clearDetectProbe()
     })
 
@@ -489,6 +515,7 @@ export function mountCameraStreamTab(root: HTMLElement) {
 
     const { host, port } = parseSignalingTarget(signalingTargetEl.value)
     connectSignalingResultEl.textContent = `Connecting to signaling server at ws://${host}:${port}…`
+    logger.log('WS_CONNECT', 'connecting', { host, port })
     emitWebrtcProgressEvent('SIGNALING_CONNECTING', { host, port })
 
     let observedAnyMessage = false
@@ -500,6 +527,7 @@ export function mountCameraStreamTab(root: HTMLElement) {
       if (typeof event.data !== 'string') return
       try {
         const payload = JSON.parse(event.data) as SignalingMessage
+        logger.log('WS_MESSAGE', 'received', { type: payload.type, size: event.data.length })
         void handleSignalingPayload(payload)
       } catch {
         // Non-JSON relay message; ignore.
@@ -509,6 +537,7 @@ export function mountCameraStreamTab(root: HTMLElement) {
     socket.addEventListener('open', () => {
       if (connectedSocket !== socket) return
       btnConnectSignalingEl.textContent = 'Disconnect from signaling server'
+      logger.log('WS_CONNECT', 'connected', { host, port })
       emitWebrtcProgressEvent('SIGNALING_CONNECTED', { host, port })
 
       connectStatusTimer = window.setTimeout(() => {
@@ -522,12 +551,14 @@ export function mountCameraStreamTab(root: HTMLElement) {
 
     socket.addEventListener('close', () => {
       if (connectedSocket !== socket) return
+      logger.warn('WS_CONNECT', 'closed by peer', { host, port })
       clearConnectionState()
     })
 
     socket.addEventListener('error', () => {
       if (connectedSocket !== socket) return
       connectSignalingResultEl.textContent = `Failed to connect to signaling server at ws://${host}:${port}.`
+      logger.error('WS_CONNECT', 'connect failed', { host, port })
       emitWebrtcProgressEvent('SIGNALING_FAILED', {
         message: `Failed to connect to signaling server at ws://${host}:${port}.`,
         details: { host, port },
@@ -538,6 +569,12 @@ export function mountCameraStreamTab(root: HTMLElement) {
 
   btnShowVideoStreamEl.addEventListener('click', () => {
     void showVideoStream()
+  })
+
+  btnCopyReceiverLogsEl.addEventListener('click', () => {
+    const text = `LOG\n${receiverLogEl.textContent || ''}\n\nERROR\n${receiverErrorEl.textContent || ''}`
+    if (!navigator.clipboard?.writeText) return
+    void navigator.clipboard.writeText(text)
   })
 
   btnRealtimeDetectStreamEl.addEventListener('click', () => {

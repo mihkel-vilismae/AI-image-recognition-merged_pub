@@ -20,6 +20,9 @@ describe('webrtc server tab', () => {
     expect(root.querySelectorAll('.webrtcCodeBtn')).toHaveLength(2)
     expect(root.querySelector('[data-step-dot="relay"]')).toBeTruthy()
     expect(root.querySelector('[data-step-dot="phone"]')).toBeTruthy()
+    root.querySelector<HTMLButtonElement>('[data-action="open-phone"]')?.click()
+    expect(root.querySelector('#btnCopyHtmlTop')?.classList.contains('hidden')).toBe(false)
+    expect(root.querySelectorAll('#systemPanel [data-component]').length).toBeGreaterThanOrEqual(3)
   })
 
   it('updates dot colors based on emitted events', () => {

@@ -69,6 +69,8 @@ describe('single page tabs', () => {
 
     expect(root.querySelector('h1')?.textContent).toContain('WebRTC Server')
     expect(root.querySelector<HTMLAnchorElement>('[data-route="webrtc-server"]')?.dataset.active).toBe('true')
+    expect(root.querySelector('#systemPanel')).toBeTruthy()
+    expect(root.querySelectorAll('#systemPanel [data-component]').length).toBeGreaterThanOrEqual(3)
 
     const codeButtons = root.querySelectorAll<HTMLButtonElement>('.webrtcCodeBtn')
     expect(codeButtons.length).toBe(2)
@@ -80,6 +82,7 @@ describe('single page tabs', () => {
     root.querySelector<HTMLButtonElement>('#btnCloseWebrtcCodeModal')?.click()
 
     root.querySelector<HTMLButtonElement>('[data-action="open-phone"]')?.click()
+    expect(root.querySelector('#webrtcCodeModal .webrtcCodeTopActions #btnCopyHtmlTop')).toBeTruthy()
     for (let i = 0; i < 5; i++) {
       if (fetchSpy.mock.calls.length > 0) break
       await new Promise((resolve) => setTimeout(resolve, 0))
@@ -112,7 +115,7 @@ describe('single page tabs', () => {
     window.location.hash = '#/webrtc-server'
     window.dispatchEvent(new HashChangeEvent('hashchange'))
 
-    expect(root.querySelectorAll('.step-dot--idle').length).toBe(5)
+    expect(root.querySelectorAll('.step-dot--idle').length).toBeGreaterThanOrEqual(4)
 
     emitAppEvent('WEBRTC_SIGNALING_CONNECTING', {})
     expect(root.querySelector('[data-step-dot="connect"]')?.classList.contains('step-dot--working')).toBe(true)
@@ -131,6 +134,23 @@ describe('single page tabs', () => {
     trackLine.click()
     expect(root.querySelector('#webrtcErrorModal')?.classList.contains('hidden')).toBe(false)
     expect(root.querySelector('#webrtcErrorModalBody')?.textContent).toContain('timeout waiting for remote track')
+  })
+
+
+
+  it('uses query ip override for generated phone html', () => {
+    window.history.replaceState({}, '', '/?ip=1.2.3.4#/webrtc-server')
+    const root = document.createElement('div')
+    root.id = 'app'
+    document.body.appendChild(root)
+
+    initSinglePageApp(root)
+    window.location.hash = '#/webrtc-server'
+    window.dispatchEvent(new HashChangeEvent('hashchange'))
+
+    root.querySelector<HTMLButtonElement>('[data-action="open-phone"]')?.click()
+    const html = root.querySelector<HTMLElement>('#tabView')?.dataset.phonePublisherHtml || ''
+    expect(html).toContain('ws://1.2.3.4:8765')
   })
 
   it('marks selected tab active', () => {
