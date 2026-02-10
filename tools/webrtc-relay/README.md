@@ -8,4 +8,6 @@ pip install websockets
 python server.py
 ```
 
-The relay listens on `ws://0.0.0.0:8765`.
+Services exposed:
+- WebSocket relay: `ws://0.0.0.0:8765`
+- HTTP health: `http://0.0.0.0:8766/health`

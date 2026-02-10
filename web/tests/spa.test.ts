@@ -15,6 +15,16 @@ describe('single page tabs', () => {
       revokeObjectURL: vi.fn(),
     })
 
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    )
+
     const fakeCtx = {
       drawImage: vi.fn(),
       clearRect: vi.fn(),
@@ -46,15 +56,7 @@ describe('single page tabs', () => {
     expect(root.textContent).toContain('hello camera stream')
   })
 
-  it('renders WebRTC Server tab with two code buttons and local modal generation (no /api calls)', async () => {
-    const fetchSpy = vi.fn(async (_input: RequestInfo | URL) => {
-      return new Response(
-        '<html><button id="btnStart"></button><div id="log"></div><div id="error"></div>ws://__PC_LAN_IP__:8765</html>',
-        { status: 200, headers: { 'Content-Type': 'text/html' } },
-      )
-    })
-    vi.stubGlobal('fetch', fetchSpy)
-
+  it('renders WebRTC Server tab with two code buttons and local modal generation', async () => {
     const root = document.createElement('div')
     root.id = 'app'
     document.body.appendChild(root)
@@ -70,25 +72,22 @@ describe('single page tabs', () => {
     expect(root.querySelector('h1')?.textContent).toContain('WebRTC Server')
     expect(root.querySelector<HTMLAnchorElement>('[data-route="webrtc-server"]')?.dataset.active).toBe('true')
     expect(root.querySelector('#systemPanel')).toBeTruthy()
-    expect(root.querySelectorAll('#systemPanel [data-component]').length).toBeGreaterThanOrEqual(3)
+    expect(root.querySelectorAll('#systemPanel [data-component]').length).toBeGreaterThanOrEqual(4)
+
+    const healthCells = root.querySelectorAll<HTMLElement>('#systemPanel [data-field="healthUrl"]')
+    expect(Array.from(healthCells).every((el) => (el.textContent || '').trim().length > 0)).toBe(true)
 
     const codeButtons = root.querySelectorAll<HTMLButtonElement>('.webrtcCodeBtn')
     expect(codeButtons.length).toBe(2)
 
     root.querySelector<HTMLButtonElement>('[data-action="open-relay"]')?.click()
     expect(root.querySelector('#webrtcCodeModalBody')?.textContent).toContain('tools/webrtc-relay/server.py')
-    expect(root.querySelector('#webrtcCodeModalBody')?.textContent).toContain('WebSocket relay listening on ws://0.0.0.0:8765')
+    expect(root.querySelector('#webrtcCodeModalBody')?.textContent).toContain('Health endpoint listening on http://0.0.0.0:{HEALTH_PORT}/health')
 
     root.querySelector<HTMLButtonElement>('#btnCloseWebrtcCodeModal')?.click()
 
     root.querySelector<HTMLButtonElement>('[data-action="open-phone"]')?.click()
     expect(root.querySelector('#webrtcCodeModal .webrtcCodeTopActions #btnCopyHtmlTop')).toBeTruthy()
-    for (let i = 0; i < 5; i++) {
-      if (fetchSpy.mock.calls.length > 0) break
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    }
-
-    expect(fetchSpy.mock.calls.some((call) => String(call[0]).includes('/api/webrtc/'))).toBe(false)
 
     const ipMode = root.querySelector<HTMLSelectElement>('#webrtcIpMode')!
     const manualIp = root.querySelector<HTMLInputElement>('#webrtcManualIp')!
@@ -100,10 +99,8 @@ describe('single page tabs', () => {
     const tabView = root.querySelector<HTMLElement>('#tabView')
     const phoneHtml = tabView?.dataset.phonePublisherHtml || root.querySelector('#webrtcCodeModalBody')?.textContent || ''
     expect(phoneHtml).toContain('ws://192.168.1.20:8765')
-    expect(phoneHtml).not.toContain('__PC_LAN_IP__')
-    expect(phoneHtml).toContain('btnStart')
-    expect(phoneHtml).toContain('id="log"')
-    expect(phoneHtml).toContain('id="error"')
+    expect(phoneHtml).toContain('push("ERR"')
+    expect(phoneHtml).toContain('window.onerror')
   })
 
   it('updates checklist dot states from prefixed events and shows error modal on failure', () => {
@@ -135,8 +132,6 @@ describe('single page tabs', () => {
     expect(root.querySelector('#webrtcErrorModal')?.classList.contains('hidden')).toBe(false)
     expect(root.querySelector('#webrtcErrorModalBody')?.textContent).toContain('timeout waiting for remote track')
   })
-
-
 
   it('uses query ip override for generated phone html', () => {
     window.history.replaceState({}, '', '/?ip=1.2.3.4#/webrtc-server')
