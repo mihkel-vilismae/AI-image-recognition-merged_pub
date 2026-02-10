@@ -1,0 +1,119 @@
+<!doctype html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Phone Publisher</title>
+</head>
+<body>
+<button id="btnStart">Start camera</button>
+<button id="btnCopyLogs" type="button">Copy logs</button>
+<pre id="log"></pre>
+<pre id="error" style="color:#b91c1c;border:1px solid #ef4444;padding:8px"></pre>
+<script>
+const SIGNALING_URL = "ws://__PC_LAN_IP__:8765";
+let pc, ws, stream;
+let sentCandidates = 0;
+let recvCandidates = 0;
+const logEl = document.getElementById("log");
+const errorEl = document.getElementById("error");
+const ts = () => new Date().toISOString();
+const push = (lvl, tag, msg, data) => {
+  const suffix = data == null ? "" : " " + (typeof data === "string" ? data : JSON.stringify(data));
+  const line = "[" + ts() + "] [" + lvl + "] [" + tag + "] " + msg + suffix;
+  (lvl === "ERR" ? errorEl : logEl).textContent += line + "\n";
+  if (lvl === "ERR") errorEl.style.background = "#fee2e2";
+};
+window.onerror = (message, source, lineno, colno, err) => {
+  push("ERR", "ERR", "window.onerror", { message, source, lineno, colno, stack: err && err.stack ? err.stack : undefined });
+};
+window.onunhandledrejection = (event) => {
+  push("ERR", "ERR", "unhandledrejection", { reason: String(event.reason) });
+};
+document.getElementById("btnCopyLogs").onclick = async () => {
+  const text = "LOG\n" + logEl.textContent + "\nERROR\n" + errorEl.textContent;
+  try { await navigator.clipboard.writeText(text); push("INFO", "STEP", "logs copied"); }
+  catch (e) { push("ERR", "ERR", "copy logs failed", String(e)); }
+};
+document.getElementById("btnStart").onclick = async () => {
+  const btn = document.getElementById("btnStart");
+  btn.disabled = true;
+  try {
+    push("STEP", "STEP", "start clicked", { relay: SIGNALING_URL });
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      push("INFO", "CAM", "enumerateDevices", devices.map(d => ({ kind: d.kind, label: d.label, deviceId: d.deviceId })));
+    } catch (e) {
+      push("ERR", "CAM", "enumerateDevices failed", { name: e && e.name, message: e && e.message, raw: String(e) });
+    }
+    push("STEP", "CAM", "getUserMedia start", { constraints: { video: true } });
+    stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    push("INFO", "CAM", "getUserMedia success", { tracks: stream.getTracks().length });
+    ws = new WebSocket(SIGNALING_URL);
+    ws.onopen = async () => {
+      push("WS", "WS", "open", { url: SIGNALING_URL });
+      pc = new RTCPeerConnection();
+      pc.addEventListener("signalingstatechange", () => push("WEBRTC", "WEBRTC", "signalingstate", pc.signalingState));
+      pc.addEventListener("icegatheringstatechange", () => push("WEBRTC", "WEBRTC", "icegatheringstate", pc.iceGatheringState));
+      pc.addEventListener("iceconnectionstatechange", () => push("WEBRTC", "WEBRTC", "iceconnectionstate", pc.iceConnectionState));
+      pc.addEventListener("connectionstatechange", () => push("WEBRTC", "WEBRTC", "connectionstate", pc.connectionState));
+      stream.getTracks().forEach(t => {
+        pc.addTrack(t, stream);
+        push("INFO", "CAM", "track added", { id: t.id, kind: t.kind, label: t.label });
+      });
+      pc.onicecandidate = (e) => {
+        if (!e.candidate) return;
+        sentCandidates += 1;
+        ws.send(JSON.stringify({ type: "candidate", candidate: e.candidate }));
+        push("WEBRTC", "WEBRTC", "candidate sent", { sentCandidates });
+      };
+      try {
+        push("STEP", "WEBRTC", "createOffer start");
+        const offer = await pc.createOffer();
+        push("STEP", "WEBRTC", "createOffer ok", { sdpSize: (offer.sdp || "").length });
+        push("STEP", "WEBRTC", "setLocalDescription start");
+        await pc.setLocalDescription(offer);
+        push("STEP", "WEBRTC", "setLocalDescription ok");
+        ws.send(JSON.stringify({ type: "offer", sdp: offer.sdp }));
+        push("WS", "WS", "offer sent", { sdpSize: (offer.sdp || "").length });
+      } catch (err) {
+        push("ERR", "WEBRTC", "offer flow failed", { name: err && err.name, message: err && err.message, raw: String(err) });
+      }
+    };
+    ws.onmessage = async (event) => {
+      push("WS", "WS", "message", { size: String(event.data || "").length });
+      let msg;
+      try {
+        msg = JSON.parse(event.data);
+      } catch (err) {
+        push("ERR", "WS", "json parse failed", { raw: String(event.data), error: String(err) });
+        return;
+      }
+      if (msg.type === "answer") {
+        try {
+          push("STEP", "WEBRTC", "setRemoteDescription start");
+          await pc.setRemoteDescription({ type: "answer", sdp: msg.sdp });
+          push("STEP", "WEBRTC", "setRemoteDescription ok");
+        } catch (err) {
+          push("ERR", "WEBRTC", "setRemoteDescription failed", { name: err && err.name, message: err && err.message, raw: String(err) });
+        }
+      }
+      if (msg.type === "candidate") {
+        try {
+          recvCandidates += 1;
+          await pc.addIceCandidate(msg.candidate);
+          push("WEBRTC", "WEBRTC", "candidate received", { recvCandidates });
+        } catch (err) {
+          push("ERR", "WEBRTC", "addIceCandidate failed", { raw: String(err) });
+        }
+      }
+    };
+    ws.onerror = () => push("ERR", "WS", "error");
+    ws.onclose = (event) => push("ERR", "WS", "close", { code: event.code, reason: event.reason, wasClean: event.wasClean });
+  } catch (e) {
+    push("ERR", "ERR", "start flow failed", { name: e && e.name, message: e && e.message, raw: String(e) });
+    btn.disabled = false;
+  }
+};
+</script>
+</body>
+</html>
