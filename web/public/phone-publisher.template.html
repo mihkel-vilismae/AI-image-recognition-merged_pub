@@ -1,0 +1,166 @@
+<!doctype html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Phone Publisher</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 16px; }
+    .top { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    input { min-width: 240px; }
+    pre { border: 1px solid #ccc; border-radius: 8px; padding: 8px; white-space: pre-wrap; }
+    #error { color: #b91c1c; }
+  </style>
+</head>
+<body>
+<h1>Phone camera publisher</h1>
+
+<div class="top">
+  <label for="relayUrl">Relay URL</label>
+  <input id="relayUrl" value="ws://__PC_LAN_IP__:8765" />
+  <button id="btnSaveRelay" type="button">Save relay</button>
+  <button id="btnStart">Start camera</button>
+  <button id="btnCopyLogs" type="button">Copy logs</button>
+</div>
+
+<pre id="log"></pre>
+<pre id="error"></pre>
+
+<script>
+(function () {
+  const logEl = document.getElementById("log");
+  const errorEl = document.getElementById("error");
+  const relayInput = document.getElementById("relayUrl");
+  const STORAGE_KEY = "webrtc.lastGoodRelay";
+
+  function now() { return new Date().toISOString(); }
+  function log(stage, msg, data) {
+    const suffix = data == null ? "" : " " + (typeof data === "string" ? data : JSON.stringify(data));
+    const line = `[${now()}] [PHONE] [${stage}] ${msg}${suffix}`;
+    logEl.textContent += line + "\n";
+    console.log(line);
+  }
+  function error(stage, msg, err) {
+    const extra = err ? { name: err.name, message: err.message, raw: String(err) } : undefined;
+    const suffix = extra ? " " + JSON.stringify(extra) : "";
+    const line = `[${now()}] [PHONE] [${stage}] ${msg}${suffix}`;
+    errorEl.textContent += line + "\n";
+    console.error(line);
+  }
+
+  function resolveRelayUrl() {
+    const params = new URLSearchParams(window.location.search);
+    const fromRelay = params.get("relay");
+    const fromIp = params.get("ip");
+    const fromStorage = localStorage.getItem(STORAGE_KEY);
+    const fromHost = window.location.hostname ? `ws://${window.location.hostname}:8765` : "";
+    return fromRelay || (fromIp ? `ws://${fromIp}:8765` : "") || fromStorage || fromHost || relayInput.value;
+  }
+
+  relayInput.value = resolveRelayUrl();
+  log("BOOT", "page loaded", { href: window.location.href, relayUrl: relayInput.value, hostname: window.location.hostname || "unknown" });
+
+  let pc = null;
+  let ws = null;
+  let stream = null;
+  let candidateCount = 0;
+
+  document.getElementById("btnSaveRelay").onclick = () => {
+    localStorage.setItem(STORAGE_KEY, relayInput.value.trim());
+    log("CONFIG", "relay url saved", { relay: relayInput.value.trim() });
+  };
+
+  document.getElementById("btnCopyLogs").onclick = async () => {
+    const text = `LOG\n${logEl.textContent}\n\nERROR\n${errorEl.textContent}`;
+    try {
+      await navigator.clipboard.writeText(text);
+      log("UI", "logs copied");
+    } catch (e) {
+      error("UI", "copy logs failed", e);
+    }
+  };
+
+  document.getElementById("btnStart").onclick = async () => {
+    try {
+      const relayUrl = relayInput.value.trim();
+      log("WS", "connecting", { relayUrl });
+      ws = new WebSocket(relayUrl);
+
+      ws.onopen = async () => {
+        localStorage.setItem(STORAGE_KEY, relayUrl);
+        log("WS", "connected", { relayUrl });
+
+        try {
+          log("MEDIA", "enumerateDevices:start");
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          log("MEDIA", "enumerateDevices:ok", devices.map((d) => ({ kind: d.kind, label: d.label, deviceId: d.deviceId })));
+        } catch (e) {
+          error("MEDIA", "enumerateDevices failed", e);
+        }
+
+        log("MEDIA", "getUserMedia:start", { constraints: { video: true } });
+        stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        log("MEDIA", "getUserMedia:ok", { trackCount: stream.getTracks().length });
+
+        stream.getTracks().forEach((track) => {
+          log("MEDIA", "track-added", { kind: track.kind, id: track.id, label: track.label });
+          track.addEventListener("ended", () => log("MEDIA", "track-ended", { id: track.id }));
+        });
+
+        pc = new RTCPeerConnection();
+        log("PC", "created", { iceServers: pc.getConfiguration().iceServers || [] });
+
+        pc.onsignalingstatechange = () => log("PC", "signaling-state", { state: pc.signalingState });
+        pc.onicegatheringstatechange = () => log("PC", "ice-gathering-state", { state: pc.iceGatheringState });
+        pc.oniceconnectionstatechange = () => log("PC", "ice-connection-state", { state: pc.iceConnectionState });
+        pc.onconnectionstatechange = () => log("PC", "connection-state", { state: pc.connectionState });
+
+        stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+        log("PC", "tracks-added", { count: stream.getTracks().length });
+
+        pc.onicecandidate = (e) => {
+          if (!e.candidate) return;
+          candidateCount += 1;
+          ws.send(JSON.stringify({ type: "candidate", candidate: e.candidate }));
+          log("PC", "ice-candidate", { count: candidateCount, candidate: String(e.candidate.candidate || "") });
+        };
+
+        log("PC", "createOffer:start");
+        const offer = await pc.createOffer();
+        log("PC", "createOffer:ok", { sdpSize: (offer.sdp || "").length });
+
+        log("PC", "setLocalDescription:start");
+        await pc.setLocalDescription(offer);
+        log("PC", "setLocalDescription:ok");
+
+        ws.send(JSON.stringify({ type: "offer", sdp: offer.sdp }));
+        log("WS", "offer sent", { size: (offer.sdp || "").length });
+      };
+
+      ws.onmessage = async (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          log("WS", "message", { type: msg.type, size: String(e.data || "").length });
+          if (msg.type === "answer") {
+            log("PC", "setRemoteDescription:start");
+            await pc.setRemoteDescription({ type: "answer", sdp: msg.sdp });
+            log("PC", "setRemoteDescription:ok");
+          }
+          if (msg.type === "candidate") {
+            await pc.addIceCandidate(msg.candidate);
+            log("PC", "addIceCandidate:ok");
+          }
+        } catch (err) {
+          error("WS", "message handling failed", err);
+        }
+      };
+
+      ws.onerror = (e) => error("WS", "websocket error", e);
+      ws.onclose = (e) => log("WS", "closed", { code: e.code, reason: e.reason });
+    } catch (e) {
+      error("BOOT", "start flow failed", e);
+    }
+  };
+})();
+</script>
+</body>
+</html>
