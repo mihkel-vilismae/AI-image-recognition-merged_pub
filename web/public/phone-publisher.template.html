@@ -1,0 +1,69 @@
+<!doctype html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Phone Publisher</title>
+</head>
+<body>
+
+<button id="btnStart">Start camera</button>
+<pre id="log"></pre>
+<pre id="error"></pre>
+
+<script>
+const SIGNALING_URL = "ws://__PC_LAN_IP__:8765";
+let pc, ws, stream;
+
+const log = msg => document.getElementById("log").textContent += msg + "\n";
+const error = msg => document.getElementById("error").textContent = msg;
+
+document.getElementById("btnStart").onclick = async () => {
+  try {
+    ws = new WebSocket(SIGNALING_URL);
+
+    ws.onopen = async () => {
+      log("WS connected");
+
+      stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      pc = new RTCPeerConnection();
+
+      stream.getTracks().forEach(t => pc.addTrack(t, stream));
+
+      pc.onicecandidate = e => {
+        if (e.candidate) {
+          ws.send(JSON.stringify({ type: "candidate", candidate: e.candidate }));
+        }
+      };
+
+      pc.onconnectionstatechange = () =>
+        log("PC state: " + pc.connectionState);
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      ws.send(JSON.stringify({ type: "offer", sdp: offer.sdp }));
+
+      log("Offer sent");
+    };
+
+    ws.onmessage = async e => {
+      const msg = JSON.parse(e.data);
+
+      if (msg.type === "answer") {
+        await pc.setRemoteDescription({ type: "answer", sdp: msg.sdp });
+        log("Answer applied");
+      }
+
+      if (msg.type === "candidate") {
+        await pc.addIceCandidate(msg.candidate);
+      }
+    };
+
+    ws.onerror = () => error("WebSocket error");
+  } catch (e) {
+    error(e.toString());
+  }
+};
+</script>
+
+</body>
+</html>
