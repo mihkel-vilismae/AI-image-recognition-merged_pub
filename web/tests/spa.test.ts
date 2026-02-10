@@ -46,6 +46,26 @@ describe('single page tabs', () => {
     expect(root.textContent).toContain('hello camera stream')
   })
 
+
+
+  it('renders WebRTC Server tab next to Camera Stream and mounts its view', () => {
+    const root = document.createElement('div')
+    root.id = 'app'
+    document.body.appendChild(root)
+
+    initSinglePageApp(root)
+
+    const tabRoutes = Array.from(root.querySelectorAll<HTMLAnchorElement>('.tabLink')).map((el) => el.dataset.route)
+    expect(tabRoutes).toEqual(['images', 'videos', 'camera-stream', 'webrtc-server'])
+
+    window.location.hash = '#/webrtc-server'
+    window.dispatchEvent(new HashChangeEvent('hashchange'))
+
+    expect(root.querySelector('h1')?.textContent).toContain('WebRTC Server')
+    expect(root.textContent).toContain('phone → signaling server → Camera Stream')
+    expect(root.querySelector<HTMLAnchorElement>('[data-route="webrtc-server"]')?.dataset.active).toBe('true')
+  })
+
   it('marks selected tab active', () => {
     const root = document.createElement('div')
     root.id = 'app'

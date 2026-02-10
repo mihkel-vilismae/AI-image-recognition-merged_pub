@@ -4,6 +4,7 @@ import { parseRouteFromHash, type AppRoute } from './common'
 import { mountCameraStreamTab } from './tabs/camera-stream-tab'
 import { mountImagesTab } from './tabs/images-tab'
 import { mountVideosTab } from './tabs/videos-tab'
+import { mountWebrtcServerTab } from './tabs/webrtc-server-tab'
 
 function renderShell(root: HTMLElement) {
   root.innerHTML = `
@@ -12,6 +13,7 @@ function renderShell(root: HTMLElement) {
       <a class="tabLink" data-route="images" href="#/images">Images</a>
       <a class="tabLink" data-route="videos" href="#/videos">Videos</a>
       <a class="tabLink" data-route="camera-stream" href="#/camera-stream">Camera Stream</a>
+      <a class="tabLink" data-route="webrtc-server" href="#/webrtc-server">WebRTC Server</a>
     </nav>
     <section id="tabView"></section>
   </div>
@@ -41,7 +43,12 @@ function mountRoute(root: HTMLElement) {
     return
   }
 
-  mountCameraStreamTab(tabView)
+  if (route === 'camera-stream') {
+    mountCameraStreamTab(tabView)
+    return
+  }
+
+  mountWebrtcServerTab(tabView)
 }
 
 export function initSinglePageApp(root: HTMLElement) {

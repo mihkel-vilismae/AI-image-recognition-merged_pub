@@ -59,3 +59,35 @@
 .cameraPreviewWrap {
   max-width: 760px;
 }
+
+
+.webrtcServerGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.webrtcServerPanel {
+  border: 1px solid rgba(152, 167, 194, 0.25);
+  border-radius: 12px;
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.webrtcServerPanel h2,
+.webrtcServerChecklist h2 {
+  font-size: 15px;
+  margin: 0 0 10px;
+}
+
+.webrtcServerChecklist {
+  margin-top: 14px;
+  border-top: 1px solid rgba(152, 167, 194, 0.25);
+  padding-top: 12px;
+}
+
+@media (max-width: 980px) {
+  .webrtcServerGrid {
+    grid-template-columns: 1fr;
+  }
+}
