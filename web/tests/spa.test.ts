@@ -46,31 +46,13 @@ describe('single page tabs', () => {
     expect(root.textContent).toContain('hello camera stream')
   })
 
-  it('renders WebRTC Server tab with two code buttons and modal content from backend endpoints', async () => {
-    const fetchSpy = vi.fn(async (input: RequestInfo | URL) => {
-        const url = typeof input === 'string' ? input : String((input as Request).url ?? input)
-        if (url.includes('/api/webrtc/relay-info')) {
-          return new Response(
-            JSON.stringify({
-              relayPath: '/workspace/AI-image-recognition-merged/server/server.py',
-              relayExists: true,
-              runCommands: ['cd /workspace/AI-image-recognition-merged/server', 'python server.py'],
-              relayCode: 'print("relay")',
-            }),
-            { status: 200, headers: { 'Content-Type': 'application/json' } },
-          )
-        }
-
-        return new Response(
-          JSON.stringify({
-            ipCandidates: ['10.0.0.5', '192.168.1.22'],
-            selectedIp: '10.0.0.5',
-            warning: false,
-            html: '<html><button id="btnFront"></button><button id="btnBack"></button><div id="log"></div><div id="error"></div>ws://10.0.0.5:8765</html>',
-          }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } },
-        )
-      })
+  it('renders WebRTC Server tab with two code buttons and local modal generation (no /api calls)', async () => {
+    const fetchSpy = vi.fn(async (_input: RequestInfo | URL) => {
+      return new Response(
+        '<html><button id="btnFront"></button><button id="btnBack"></button><div id="log"></div><div id="error"></div>ws://__PC_LAN_IP__:8765</html>',
+        { status: 200, headers: { 'Content-Type': 'text/html' } },
+      )
+    })
     vi.stubGlobal('fetch', fetchSpy)
 
     const root = document.createElement('div')
@@ -92,30 +74,36 @@ describe('single page tabs', () => {
     expect(codeButtons.length).toBe(2)
 
     root.querySelector<HTMLButtonElement>('[data-action="open-relay"]')?.click()
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(fetchSpy.mock.calls.some((call) => String(call[0]).includes('/api/webrtc/relay-info'))).toBe(true)
+    expect(root.querySelector('#webrtcCodeModalBody')?.textContent).toContain('tools/webrtc-relay/server.py')
+    expect(root.querySelector('#webrtcCodeModalBody')?.textContent).toContain('WebSocket relay listening on ws://0.0.0.0:8765')
 
     root.querySelector<HTMLButtonElement>('#btnCloseWebrtcCodeModal')?.click()
 
     root.querySelector<HTMLButtonElement>('[data-action="open-phone"]')?.click()
     for (let i = 0; i < 5; i++) {
-      const text = root.querySelector('#webrtcCodeModalBody')?.textContent || ''
-      if (text.includes('ws://10.0.0.5:8765')) break
+      if (fetchSpy.mock.calls.length > 0) break
       await new Promise((resolve) => setTimeout(resolve, 0))
     }
 
-    expect(fetchSpy.mock.calls.some((call) => String(call[0]).includes('/api/webrtc/phone-publisher'))).toBe(true)
+    expect(fetchSpy.mock.calls.some((call) => String(call[0]).includes('/api/webrtc/'))).toBe(false)
 
-    const phoneHtml = root.querySelector('#webrtcCodeModalBody')?.textContent || ''
-    expect(phoneHtml).toContain('ws://10.0.0.5:8765')
-    expect(phoneHtml).not.toContain('PC_LAN_IP')
+    for (let i = 0; i < 5; i++) {
+      const text = root.querySelector('#webrtcCodeModalBody')?.textContent || ''
+      if (text.includes('ws://127.0.0.1:8765')) break
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+
+    const tabView = root.querySelector<HTMLElement>('#tabView')
+    const phoneHtml = tabView?.dataset.phonePublisherHtml || root.querySelector('#webrtcCodeModalBody')?.textContent || ''
+    expect(phoneHtml).toContain('ws://127.0.0.1:8765')
+    expect(phoneHtml).not.toContain('__PC_LAN_IP__')
     expect(phoneHtml).toContain('btnFront')
     expect(phoneHtml).toContain('btnBack')
     expect(phoneHtml).toContain('id="log"')
     expect(phoneHtml).toContain('id="error"')
   })
 
-  it('updates checklist dot states from app events and shows error modal on failure', () => {
+  it('updates checklist dot states from prefixed events and shows error modal on failure', () => {
     const root = document.createElement('div')
     root.id = 'app'
     document.body.appendChild(root)
@@ -126,16 +114,16 @@ describe('single page tabs', () => {
 
     expect(root.querySelectorAll('.step-dot--idle').length).toBe(5)
 
-    emitAppEvent('SIGNALING_CONNECTING', {})
+    emitAppEvent('WEBRTC_SIGNALING_CONNECTING', {})
     expect(root.querySelector('[data-step-dot="connect"]')?.classList.contains('step-dot--working')).toBe(true)
 
-    emitAppEvent('SIGNALING_CONNECTED', {})
+    emitAppEvent('WEBRTC_SIGNALING_CONNECTED', {})
     expect(root.querySelector('[data-step-dot="connect"]')?.classList.contains('step-dot--ok')).toBe(true)
 
-    emitAppEvent('VIEWER_READY_SENT', {})
+    emitAppEvent('WEBRTC_VIEWER_READY_SENT', {})
     expect(root.querySelector('[data-step-dot="show"]')?.classList.contains('step-dot--working')).toBe(true)
 
-    emitAppEvent('REMOTE_TRACK_FAILED', { message: 'timeout waiting for remote track', details: { timeoutMs: 5000 } })
+    emitAppEvent('WEBRTC_NEGOTIATION_FAILED', { message: 'timeout waiting for remote track', details: { timeoutMs: 5000 } })
     const trackLine = root.querySelector<HTMLElement>('[data-step-line="track"]')!
     expect(root.querySelector('[data-step-dot="track"]')?.classList.contains('step-dot--fail')).toBe(true)
     expect(trackLine.classList.contains('webrtcStepLine--clickable')).toBe(true)
