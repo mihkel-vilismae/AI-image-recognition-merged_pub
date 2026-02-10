@@ -8,9 +8,10 @@ from pathlib import Path
 import socket
 import tempfile
 import time
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import numpy as np
@@ -23,6 +24,39 @@ _model: Optional[Any] = None
 logger = logging.getLogger(__name__)
 LOGS_DIR = Path(__file__).resolve().parents[2] / "logs"
 ANALYTICS_LOG_FILE = LOGS_DIR / "detection_analytics.jsonl"
+SIGNALING_RELAY_FILE = Path(__file__).resolve().parents[1] / "server.py"
+
+SIGNALING_RELAY_SOURCE = """import asyncio
+import websockets
+
+clients = set()
+
+
+async def relay(websocket):
+    clients.add(websocket)
+    try:
+        async for message in websocket:
+            for client in tuple(clients):
+                if client is websocket:
+                    continue
+                try:
+                    await client.send(message)
+                except Exception:
+                    pass
+    finally:
+        clients.discard(websocket)
+
+
+async def main():
+    async with websockets.serve(relay, "0.0.0.0", 8765):
+        print("WebSocket relay listening on ws://0.0.0.0:8765")
+        await asyncio.Future()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+"""
+
 
 
 def _now_iso() -> str:
@@ -70,6 +104,158 @@ def _discover_local_ips() -> List[str]:
         pass
 
     return sorted(ips)
+
+
+def _is_rfc1918_ip(ip: str) -> bool:
+    if ip.startswith("10.") or ip.startswith("192.168."):
+        return True
+    if not ip.startswith("172."):
+        return False
+    try:
+        second = int(ip.split(".")[1])
+    except (ValueError, IndexError):
+        return False
+    return 16 <= second <= 31
+
+
+def _lan_ip_candidates() -> List[str]:
+    ips = sorted({ip for ip in _discover_local_ips() if ip and not ip.startswith("127.") and not ip.startswith("169.254.")})
+    if not ips:
+        return ["127.0.0.1"]
+
+    preferred = sorted((ip for ip in ips if _is_rfc1918_ip(ip)))
+    rest = [ip for ip in ips if ip not in preferred]
+    return preferred + rest
+
+
+def _ensure_signaling_relay_script() -> Path:
+    SIGNALING_RELAY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    if not SIGNALING_RELAY_FILE.exists():
+        SIGNALING_RELAY_FILE.write_text(SIGNALING_RELAY_SOURCE, encoding="utf-8")
+    return SIGNALING_RELAY_FILE
+
+
+def _phone_publisher_html(ip: str, signaling_port: int = 8765) -> str:
+    ws_url = f"ws://{ip}:{signaling_port}"
+    return f"""<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Phone Publisher</title>
+    <style>
+      body {{ font-family: system-ui, sans-serif; margin: 16px; background: #0b0f17; color: #e9eef7; }}
+      button {{ margin-right: 8px; margin-bottom: 8px; }}
+      video {{ width: 100%; max-width: 480px; background: #000; border-radius: 8px; }}
+      pre {{ background: #111a2b; padding: 10px; border-radius: 8px; white-space: pre-wrap; }}
+      #error {{ color: #ff5c7a; }}
+    </style>
+  </head>
+  <body>
+    <h1>Phone camera publisher</h1>
+    <p>Signaling: <code>{ws_url}</code></p>
+    <button id="btnFront" type="button">Front camera</button>
+    <button id="btnBack" type="button">Back camera</button>
+    <video id="preview" autoplay muted playsinline></video>
+    <pre id="log"></pre>
+    <pre id="error"></pre>
+
+    <script>
+      const SIGNALING_URL = {ws_url!r};
+      const preview = document.getElementById('preview');
+      const logEl = document.getElementById('log');
+      const errorEl = document.getElementById('error');
+      const btnFront = document.getElementById('btnFront');
+      const btnBack = document.getElementById('btnBack');
+
+      let socket = null;
+      let pc = null;
+      let stream = null;
+      let facingMode = 'environment';
+
+      function log(msg) {{ logEl.textContent += msg + '\n'; }}
+      function setError(msg) {{ errorEl.textContent = msg || ''; }}
+
+      async function cleanup() {{
+        if (stream) {{
+          stream.getTracks().forEach((t) => t.stop());
+          stream = null;
+        }}
+        if (pc) {{
+          try {{ pc.close(); }} catch (_) {{}}
+          pc = null;
+        }}
+      }}
+
+      function send(payload) {{
+        if (socket && socket.readyState === WebSocket.OPEN) {{
+          socket.send(JSON.stringify(payload));
+        }}
+      }}
+
+      async function startPublisher(nextFacingMode) {{
+        facingMode = nextFacingMode;
+        setError('');
+        await cleanup();
+
+        stream = await navigator.mediaDevices.getUserMedia({{ video: {{ facingMode }}, audio: false }});
+        preview.srcObject = stream;
+
+        pc = new RTCPeerConnection();
+        stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+
+        pc.onicecandidate = (event) => {{
+          if (!event.candidate) return;
+          send({{ type: 'candidate', candidate: event.candidate }});
+        }};
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        send({{ type: 'offer', sdp: offer.sdp }});
+        log(`Offer sent (${facingMode})`);
+      }}
+
+      function connectSocket() {{
+        socket = new WebSocket(SIGNALING_URL);
+        socket.addEventListener('open', async () => {{
+          log('Socket connected');
+          try {{
+            await startPublisher(facingMode);
+          }} catch (err) {{
+            setError(String(err));
+          }}
+        }});
+
+        socket.addEventListener('message', async (event) => {{
+          try {{
+            const msg = JSON.parse(event.data);
+            if (msg.type === 'answer' && msg.sdp && pc) {{
+              await pc.setRemoteDescription({{ type: 'answer', sdp: msg.sdp }});
+              log('Answer applied');
+            }}
+            if (msg.type === 'candidate' && msg.candidate && pc) {{
+              await pc.addIceCandidate(msg.candidate);
+            }}
+          }} catch (err) {{
+            setError(String(err));
+          }}
+        }});
+
+        socket.addEventListener('error', () => setError('WebSocket signaling error'));
+      }}
+
+      btnFront.addEventListener('click', async () => {{
+        try {{ await startPublisher('user'); }} catch (err) {{ setError(String(err)); }}
+      }});
+      btnBack.addEventListener('click', async () => {{
+        try {{ await startPublisher('environment'); }} catch (err) {{ setError(String(err)); }}
+      }});
+
+      connectSocket();
+    </script>
+  </body>
+</html>
+"""
 
 
 def _log_network_access_urls(port: int) -> None:
@@ -208,10 +394,50 @@ def create_app() -> FastAPI:
         _log_network_access_urls(port)
 
     @app.get("/health")
-    def health() -> Dict[str, bool]:
-        return {"ok": True}
+    def health() -> Dict[str, str | bool]:
+        return {
+            "ok": True,
+            "service": "ai-image-recognition",
+            "time": datetime.utcnow().isoformat() + "Z",
+            "version": "1.0",
+        }
+
+    @app.get("/webrtc/network")
+    def webrtc_network() -> Dict[str, Any]:
+        candidates = _lan_ip_candidates()
+        warning = candidates == ["127.0.0.1"]
+        return {
+            "ipCandidates": candidates,
+            "selectedIp": candidates[0],
+            "warning": warning,
+        }
+
+    @app.get("/webrtc/relay-info")
+    def webrtc_relay_info() -> Dict[str, Any]:
+        relay_path = _ensure_signaling_relay_script()
+        return {
+            "relayPath": str(relay_path),
+            "relayExists": relay_path.exists(),
+            "runCommands": [f"cd {relay_path.parent}", "python server.py"],
+            "relayCode": relay_path.read_text(encoding="utf-8"),
+        }
+
+    @app.get("/webrtc/phone-publisher")
+    def webrtc_phone_publisher(ip: Optional[str] = Query(default=None)) -> Dict[str, Any]:
+        candidates = _lan_ip_candidates()
+        selected = ip.strip() if ip and ip.strip() else candidates[0]
+        if selected not in candidates:
+            candidates = sorted(set(candidates + [selected]))
+        warning = candidates == ["127.0.0.1"]
+        return {
+            "ipCandidates": candidates,
+            "selectedIp": selected,
+            "warning": warning,
+            "html": _phone_publisher_html(selected, signaling_port=8765),
+        }
 
     @app.post("/detect")
+    @app.post("/api/detect")
     async def detect(file: UploadFile = File(...), conf: float = 0.25) -> Dict[str, Any]:
         data = await file.read()
         img = Image.open(io.BytesIO(data)).convert("RGB")
