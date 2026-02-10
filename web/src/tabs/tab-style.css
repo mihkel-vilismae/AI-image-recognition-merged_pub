@@ -91,3 +91,37 @@
     grid-template-columns: 1fr;
   }
 }
+
+.webrtcCodeBtn {
+  margin-top: 8px;
+}
+
+.webrtcCodeModal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+}
+
+.webrtcCodeBackdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.webrtcCodeDialog {
+  position: relative;
+  max-width: 760px;
+  margin: 8vh auto 0;
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(152, 167, 194, 0.35);
+  background: #0d1524;
+}
+
+.webrtcCodeTopRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}

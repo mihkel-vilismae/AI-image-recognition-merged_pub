@@ -64,6 +64,16 @@ describe('single page tabs', () => {
     expect(root.querySelector('h1')?.textContent).toContain('WebRTC Server')
     expect(root.textContent).toContain('phone → signaling server → Camera Stream')
     expect(root.querySelector<HTMLAnchorElement>('[data-route="webrtc-server"]')?.dataset.active).toBe('true')
+
+    const codeButtons = root.querySelectorAll<HTMLButtonElement>('.webrtcCodeBtn')
+    expect(codeButtons.length).toBe(4)
+
+    codeButtons[0]?.click()
+    expect(root.querySelector('#webrtcCodeModal')?.classList.contains('hidden')).toBe(false)
+    expect(root.querySelector('#webrtcCodeModalBody')?.textContent).toContain('python server.py')
+
+    root.querySelector<HTMLButtonElement>('#btnCloseWebrtcCodeModal')?.click()
+    expect(root.querySelector('#webrtcCodeModal')?.classList.contains('hidden')).toBe(true)
   })
 
   it('marks selected tab active', () => {
