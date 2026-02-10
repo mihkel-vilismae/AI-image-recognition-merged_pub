@@ -14,6 +14,14 @@ function makeClipboardEventWithImage(file: File) {
 }
 
 describe('initApp', () => {
+  it('uses same-origin /api backend by default to avoid dev-time CORS issues', () => {
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+
+    initApp(root)
+
+    expect(root.querySelector('#backendUrl')?.textContent).toBe('/api')
+  })
   it('renders a videos link in image page header', () => {
     const root = document.createElement('div')
     document.body.appendChild(root)

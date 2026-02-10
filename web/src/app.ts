@@ -10,7 +10,7 @@ export type AppOptions = {
 }
 
 export function initApp(root: HTMLElement, opts: AppOptions = {}) {
-  const API_BASE = opts.apiBase ?? 'http://localhost:8000'
+  const API_BASE = opts.apiBase ?? '/api'
 
   root.innerHTML = `
   <div class="page">

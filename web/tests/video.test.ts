@@ -28,6 +28,15 @@ const sampleResponse = {
 }
 
 describe('initVideoApp', () => {
+  it('uses same-origin /api backend by default to avoid dev-time CORS issues', () => {
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+
+    initVideoApp(root)
+
+    expect(root.querySelector('.hint span')?.textContent).toBe('/api')
+  })
+
   beforeEach(() => {
     vi.restoreAllMocks()
     vi.useRealTimers()
