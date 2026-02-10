@@ -153,6 +153,9 @@ export function mountCameraStreamTab(root: HTMLElement) {
   function emitWebrtcProgressEvent(name: 'SIGNALING_CONNECTING' | 'SIGNALING_CONNECTED' | 'SIGNALING_FAILED' | 'VIEWER_READY_SENT' | 'OFFER_RECEIVED' | 'REMOTE_TRACK_ATTACHED' | 'REMOTE_TRACK_FAILED', detail: Record<string, unknown> = {}) {
     const prefixed = `WEBRTC_${name}` as const
     emitAppEvent(prefixed, detail)
+    if (name === 'VIEWER_READY_SENT') emitAppEvent('WEBRTC_VIEWER_READY', detail)
+    if (name === 'REMOTE_TRACK_ATTACHED') emitAppEvent('WEBRTC_REMOTE_TRACK', detail)
+    if (name === 'REMOTE_TRACK_FAILED') emitAppEvent('WEBRTC_REMOTE_TRACK_FAILED', detail)
     emitAppEvent(name, detail)
   }
 

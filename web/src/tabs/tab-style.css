@@ -161,6 +161,7 @@
 
 .step-dot--fail {
   background: #ff5c7a;
+  cursor: pointer;
 }
 
 .webrtcCodeActions {

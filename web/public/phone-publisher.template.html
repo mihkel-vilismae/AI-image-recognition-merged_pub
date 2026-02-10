@@ -1,142 +1,69 @@
 <!doctype html>
 <html>
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Phone Publisher</title>
-    <style>
-      body { font-family: system-ui, sans-serif; margin: 16px; background: #0b0f17; color: #e9eef7; }
-      button { margin-right: 8px; margin-bottom: 8px; }
-      video { width: 100%; max-width: 480px; background: #000; border-radius: 8px; }
-      pre { background: #111a2b; padding: 10px; border-radius: 8px; white-space: pre-wrap; }
-      #error { color: #ff5c7a; }
-    </style>
-  </head>
-  <body>
-    <h1>Phone camera publisher</h1>
-    <p>Signaling: <code id="signalingUrlText"></code></p>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Phone Publisher</title>
+</head>
+<body>
 
-    <button id="btnFront" type="button">Front camera</button>
-    <button id="btnBack" type="button">Back camera</button>
+<button id="btnStart">Start camera</button>
+<pre id="log"></pre>
+<pre id="error"></pre>
 
-    <video id="preview" autoplay muted playsinline></video>
-    <pre id="log"></pre>
-    <pre id="error"></pre>
+<script>
+const SIGNALING_URL = "ws://__PC_LAN_IP__:8765";
+let pc, ws, stream;
 
-    <script>
-      const PC_LAN_IP = '__PC_LAN_IP__'
-      const SIGNALING_URL = `ws://${PC_LAN_IP}:8765`
+const log = msg => document.getElementById("log").textContent += msg + "\n";
+const error = msg => document.getElementById("error").textContent = msg;
 
-      const preview = document.getElementById('preview')
-      const logEl = document.getElementById('log')
-      const errorEl = document.getElementById('error')
-      const signalingUrlText = document.getElementById('signalingUrlText')
-      const btnFront = document.getElementById('btnFront')
-      const btnBack = document.getElementById('btnBack')
+document.getElementById("btnStart").onclick = async () => {
+  try {
+    ws = new WebSocket(SIGNALING_URL);
 
-      signalingUrlText.textContent = SIGNALING_URL
+    ws.onopen = async () => {
+      log("WS connected");
 
-      let socket = null
-      let pc = null
-      let stream = null
-      let facingMode = 'environment'
+      stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      pc = new RTCPeerConnection();
 
-      function log(msg) {
-        logEl.textContent += `${msg}\n`
+      stream.getTracks().forEach(t => pc.addTrack(t, stream));
+
+      pc.onicecandidate = e => {
+        if (e.candidate) {
+          ws.send(JSON.stringify({ type: "candidate", candidate: e.candidate }));
+        }
+      };
+
+      pc.onconnectionstatechange = () =>
+        log("PC state: " + pc.connectionState);
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      ws.send(JSON.stringify({ type: "offer", sdp: offer.sdp }));
+
+      log("Offer sent");
+    };
+
+    ws.onmessage = async e => {
+      const msg = JSON.parse(e.data);
+
+      if (msg.type === "answer") {
+        await pc.setRemoteDescription({ type: "answer", sdp: msg.sdp });
+        log("Answer applied");
       }
 
-      function setError(msg) {
-        errorEl.textContent = msg || ''
+      if (msg.type === "candidate") {
+        await pc.addIceCandidate(msg.candidate);
       }
+    };
 
-      async function cleanupPublisher() {
-        if (stream) {
-          stream.getTracks().forEach((track) => track.stop())
-          stream = null
-        }
-        if (pc) {
-          try { pc.close() } catch (_) {}
-          pc = null
-        }
-      }
+    ws.onerror = () => error("WebSocket error");
+  } catch (e) {
+    error(e.toString());
+  }
+};
+</script>
 
-      function sendSignaling(payload) {
-        if (socket && socket.readyState === WebSocket.OPEN) {
-          socket.send(JSON.stringify(payload))
-        }
-      }
-
-      async function restartPublisher(nextFacingMode) {
-        facingMode = nextFacingMode
-        setError('')
-        await cleanupPublisher()
-
-        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode }, audio: false })
-        preview.srcObject = stream
-
-        pc = new RTCPeerConnection()
-        stream.getTracks().forEach((track) => pc.addTrack(track, stream))
-
-        pc.onicecandidate = (event) => {
-          if (!event.candidate) return
-          sendSignaling({ type: 'candidate', candidate: event.candidate })
-        }
-
-        const offer = await pc.createOffer()
-        await pc.setLocalDescription(offer)
-        sendSignaling({ type: 'offer', sdp: offer.sdp })
-        log(`Offer sent (${facingMode})`)
-      }
-
-      function connectSignaling() {
-        socket = new WebSocket(SIGNALING_URL)
-
-        socket.addEventListener('open', async () => {
-          log('Socket connected')
-          try {
-            await restartPublisher(facingMode)
-          } catch (err) {
-            setError(String(err))
-          }
-        })
-
-        socket.addEventListener('message', async (event) => {
-          try {
-            const msg = JSON.parse(event.data)
-            if (msg.type === 'answer' && msg.sdp && pc) {
-              await pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp })
-              log('Answer applied')
-            }
-            if (msg.type === 'candidate' && msg.candidate && pc) {
-              await pc.addIceCandidate(msg.candidate)
-            }
-          } catch (err) {
-            setError(String(err))
-          }
-        })
-
-        socket.addEventListener('error', () => {
-          setError('WebSocket signaling error')
-        })
-      }
-
-      btnFront.addEventListener('click', async () => {
-        try {
-          await restartPublisher('user')
-        } catch (err) {
-          setError(String(err))
-        }
-      })
-
-      btnBack.addEventListener('click', async () => {
-        try {
-          await restartPublisher('environment')
-        } catch (err) {
-          setError(String(err))
-        }
-      })
-
-      connectSignaling()
-    </script>
-  </body>
+</body>
 </html>

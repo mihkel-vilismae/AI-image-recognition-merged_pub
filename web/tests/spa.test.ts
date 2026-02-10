@@ -49,7 +49,7 @@ describe('single page tabs', () => {
   it('renders WebRTC Server tab with two code buttons and local modal generation (no /api calls)', async () => {
     const fetchSpy = vi.fn(async (_input: RequestInfo | URL) => {
       return new Response(
-        '<html><button id="btnFront"></button><button id="btnBack"></button><div id="log"></div><div id="error"></div>ws://__PC_LAN_IP__:8765</html>',
+        '<html><button id="btnStart"></button><div id="log"></div><div id="error"></div>ws://__PC_LAN_IP__:8765</html>',
         { status: 200, headers: { 'Content-Type': 'text/html' } },
       )
     })
@@ -87,18 +87,18 @@ describe('single page tabs', () => {
 
     expect(fetchSpy.mock.calls.some((call) => String(call[0]).includes('/api/webrtc/'))).toBe(false)
 
-    for (let i = 0; i < 5; i++) {
-      const text = root.querySelector('#webrtcCodeModalBody')?.textContent || ''
-      if (text.includes('ws://127.0.0.1:8765')) break
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    }
+    const ipMode = root.querySelector<HTMLSelectElement>('#webrtcIpMode')!
+    const manualIp = root.querySelector<HTMLInputElement>('#webrtcManualIp')!
+    ipMode.value = 'manual'
+    ipMode.dispatchEvent(new Event('change'))
+    manualIp.value = '192.168.1.20'
+    manualIp.dispatchEvent(new Event('input'))
 
     const tabView = root.querySelector<HTMLElement>('#tabView')
     const phoneHtml = tabView?.dataset.phonePublisherHtml || root.querySelector('#webrtcCodeModalBody')?.textContent || ''
-    expect(phoneHtml).toContain('ws://127.0.0.1:8765')
+    expect(phoneHtml).toContain('ws://192.168.1.20:8765')
     expect(phoneHtml).not.toContain('__PC_LAN_IP__')
-    expect(phoneHtml).toContain('btnFront')
-    expect(phoneHtml).toContain('btnBack')
+    expect(phoneHtml).toContain('btnStart')
     expect(phoneHtml).toContain('id="log"')
     expect(phoneHtml).toContain('id="error"')
   })
@@ -120,10 +120,10 @@ describe('single page tabs', () => {
     emitAppEvent('WEBRTC_SIGNALING_CONNECTED', {})
     expect(root.querySelector('[data-step-dot="connect"]')?.classList.contains('step-dot--ok')).toBe(true)
 
-    emitAppEvent('WEBRTC_VIEWER_READY_SENT', {})
+    emitAppEvent('WEBRTC_VIEWER_READY', {})
     expect(root.querySelector('[data-step-dot="show"]')?.classList.contains('step-dot--working')).toBe(true)
 
-    emitAppEvent('WEBRTC_NEGOTIATION_FAILED', { message: 'timeout waiting for remote track', details: { timeoutMs: 5000 } })
+    emitAppEvent('WEBRTC_REMOTE_TRACK_FAILED', { message: 'timeout waiting for remote track', details: { timeoutMs: 5000 } })
     const trackLine = root.querySelector<HTMLElement>('[data-step-line="track"]')!
     expect(root.querySelector('[data-step-dot="track"]')?.classList.contains('step-dot--fail')).toBe(true)
     expect(trackLine.classList.contains('webrtcStepLine--clickable')).toBe(true)

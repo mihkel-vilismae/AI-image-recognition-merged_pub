@@ -15,7 +15,9 @@ type StepError = {
 const RELAY_PATH = 'tools/webrtc-relay/server.py'
 const RELAY_COMMANDS = ['cd tools/webrtc-relay', 'pip install websockets', 'python server.py']
 const RELAY_CODE = `import asyncio
+import contextlib
 import websockets
+from websockets.exceptions import ConnectionClosed
 
 clients = set()
 
@@ -27,16 +29,23 @@ async def relay(websocket):
             for client in tuple(clients):
                 if client is websocket:
                     continue
-                try:
+                with contextlib.suppress(Exception):
                     await client.send(message)
-                except Exception:
-                    pass
+    except (ConnectionClosed, ConnectionResetError, OSError):
+        pass
     finally:
         clients.discard(websocket)
 
 
 async def main():
-    async with websockets.serve(relay, "0.0.0.0", 8765):
+    async with websockets.serve(
+        relay,
+        "0.0.0.0",
+        8765,
+        ping_interval=20,
+        ping_timeout=20,
+        close_timeout=2,
+    ):
         print("WebSocket relay listening on ws://0.0.0.0:8765")
         await asyncio.Future()
 
@@ -46,16 +55,6 @@ if __name__ == "__main__":
 `
 
 const STEP_ORDER: StepId[] = ['relay', 'phone', 'connect', 'show', 'track']
-
-
-const FALLBACK_PHONE_TEMPLATE = `<html>
-  <button id="btnFront"></button>
-  <button id="btnBack"></button>
-  <div id="log"></div>
-  <div id="error"></div>
-  ws://__PC_LAN_IP__:8765
-</html>`
-
 
 function cloneSnapshot(states: Record<StepId, StepState>): Record<StepId, StepState> {
   return { ...states }
@@ -67,7 +66,84 @@ function isLoopbackHost(hostname: string): boolean {
 }
 
 function isLikelyIpv4(input: string): boolean {
-  return /^(\d{1,3}\.){3}\d{1,3}$/.test(input.trim())
+  const trimmed = input.trim()
+  if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(trimmed)) return false
+  return trimmed.split('.').every((segment) => {
+    const value = Number(segment)
+    return Number.isInteger(value) && value >= 0 && value <= 255
+  })
+}
+
+function makePhonePublisherHtml(ip: string) {
+  return `<!doctype html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Phone Publisher</title>
+</head>
+<body>
+
+<button id="btnStart">Start camera</button>
+<pre id="log"></pre>
+<pre id="error"></pre>
+
+<script>
+const SIGNALING_URL = "ws://${ip}:8765";
+let pc, ws, stream;
+
+const log = msg => document.getElementById("log").textContent += msg + "\\n";
+const error = msg => document.getElementById("error").textContent = msg;
+
+document.getElementById("btnStart").onclick = async () => {
+  try {
+    ws = new WebSocket(SIGNALING_URL);
+
+    ws.onopen = async () => {
+      log("WS connected");
+
+      stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      pc = new RTCPeerConnection();
+
+      stream.getTracks().forEach(t => pc.addTrack(t, stream));
+
+      pc.onicecandidate = e => {
+        if (e.candidate) {
+          ws.send(JSON.stringify({ type: "candidate", candidate: e.candidate }));
+        }
+      };
+
+      pc.onconnectionstatechange = () =>
+        log("PC state: " + pc.connectionState);
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      ws.send(JSON.stringify({ type: "offer", sdp: offer.sdp }));
+
+      log("Offer sent");
+    };
+
+    ws.onmessage = async e => {
+      const msg = JSON.parse(e.data);
+
+      if (msg.type === "answer") {
+        await pc.setRemoteDescription({ type: "answer", sdp: msg.sdp });
+        log("Answer applied");
+      }
+
+      if (msg.type === "candidate") {
+        await pc.addIceCandidate(msg.candidate);
+      }
+    };
+
+    ws.onerror = () => error("WebSocket error");
+  } catch (e) {
+    error(e.toString());
+  }
+};
+</script>
+
+</body>
+</html>`
 }
 
 export function mountWebrtcServerTab(root: HTMLElement) {
@@ -203,7 +279,6 @@ export function mountWebrtcServerTab(root: HTMLElement) {
 
   const defaultHost = window.location.hostname || 'localhost'
   let currentGeneratedPhoneHtml = ''
-  let cachedTemplate = ''
 
   function setActionButtons(mode: 'relay' | 'phone' | 'none') {
     btnCopyPathEl.classList.toggle('hidden', mode !== 'relay')
@@ -245,11 +320,8 @@ export function mountWebrtcServerTab(root: HTMLElement) {
     const line = root.querySelector<HTMLElement>(`[data-step-line="${step}"]`)
     if (line) {
       line.classList.toggle('webrtcStepLine--clickable', state === 'fail')
-      if (state !== 'fail') {
-        line.removeAttribute('tabindex')
-      } else {
-        line.setAttribute('tabindex', '0')
-      }
+      if (state !== 'fail') line.removeAttribute('tabindex')
+      else line.setAttribute('tabindex', '0')
     }
   }
 
@@ -285,28 +357,12 @@ export function mountWebrtcServerTab(root: HTMLElement) {
     return defaultHost.trim()
   }
 
-  async function loadPhoneTemplate(): Promise<string> {
-    if (cachedTemplate) return cachedTemplate
-    const response = await fetch('/phone-publisher.template.html', { cache: 'no-store' })
-    if (!response.ok) throw new Error(`Template fetch failed: HTTP ${response.status}`)
-    cachedTemplate = await response.text()
-    return cachedTemplate
-  }
-
-  function renderPhoneHtml(ip: string, template: string) {
-    const resolvedIp = ip || ''
-    if (!template.includes('__PC_LAN_IP__')) {
-      throw new Error('Template token __PC_LAN_IP__ is missing in phone-publisher.template.html')
-    }
-    return template.split('__PC_LAN_IP__').join(resolvedIp)
-  }
-
   function updatePhoneHtmlFromInputs() {
     setStepState('phone', 'working')
     const ip = activeIp()
 
     if (!ip) {
-      const message = 'PC LAN IP is required. Enter manual IP or open app via LAN hostname.'
+      const message = 'PC LAN IP is required before generating phone publisher HTML.'
       modalMetaEl.textContent = message
       modalBodyEl.textContent = ''
       root.dataset.phonePublisherHtml = ''
@@ -314,85 +370,116 @@ export function mountWebrtcServerTab(root: HTMLElement) {
       return
     }
 
-    if (ipModeEl.value === 'manual' && !isLikelyIpv4(ip)) {
-      const message = `Manual IP is invalid: ${ip}`
+    if (isLoopbackHost(ip)) {
+      const message = `PC LAN IP is required; loopback is not allowed: ${ip}`
       modalMetaEl.textContent = message
       modalBodyEl.textContent = ''
+      root.dataset.phonePublisherHtml = ''
       setStepState('phone', 'fail', { message, details: { ip } })
       return
     }
 
-    try {
-      currentGeneratedPhoneHtml = renderPhoneHtml(ip, cachedTemplate)
-      root.dataset.phonePublisherHtml = currentGeneratedPhoneHtml
-      if (currentGeneratedPhoneHtml.includes('__PC_LAN_IP__')) {
-        throw new Error('Publisher HTML still contains __PC_LAN_IP__ placeholder after replacement.')
-      }
-      modalMetaEl.textContent = isLoopbackHost(defaultHost)
-        ? `Using ${ip}. If this is not your LAN IP, update it manually.`
-        : `Using URL hostname ${ip} from current web app origin.`
-      modalBodyEl.textContent = currentGeneratedPhoneHtml
-      setStepState('phone', 'ok')
-    } catch (error) {
-      const message = `Failed to generate phone publisher HTML: ${String(error)}`
+    if (!isLikelyIpv4(ip)) {
+      const message = `Manual IP is invalid: ${ip}`
       modalMetaEl.textContent = message
       modalBodyEl.textContent = ''
-      setStepState('phone', 'fail', { message, details: { error: String(error), ip } })
+      root.dataset.phonePublisherHtml = ''
+      setStepState('phone', 'fail', { message, details: { ip } })
+      return
     }
+
+    currentGeneratedPhoneHtml = makePhonePublisherHtml(ip)
+    root.dataset.phonePublisherHtml = currentGeneratedPhoneHtml
+    modalMetaEl.textContent = `Using ws://${ip}:8765 from current input.`
+    modalBodyEl.textContent = currentGeneratedPhoneHtml
+    setStepState('phone', 'ok')
+  }
+
+  async function pingRelay() {
+    setStepState('relay', 'working')
+    const host = defaultHost.trim() || '127.0.0.1'
+    const target = `ws://${host}:8765`
+
+    if (isLoopbackHost(host)) {
+      const message = `Relay ping skipped: open this app using a LAN IP/hostname to test relay reachability (current host: ${host}).`
+      setStepState('relay', 'fail', { message, details: { target } })
+      return
+    }
+
+    await new Promise<void>((resolve) => {
+      let done = false
+      const timer = window.setTimeout(() => {
+        if (done) return
+        done = true
+        try {
+          socket?.close()
+        } catch {}
+        setStepState('relay', 'fail', { message: `Relay ping timed out at ${target}`, details: { target } })
+        resolve()
+      }, 2500)
+      let socket: WebSocket | null = null
+      try {
+        socket = new WebSocket(target)
+        socket.addEventListener('open', () => {
+          if (done) return
+          done = true
+          window.clearTimeout(timer)
+          try {
+            socket?.close()
+          } catch {}
+          setStepState('relay', 'ok')
+          resolve()
+        })
+        socket.addEventListener('error', () => {
+          if (done) return
+          done = true
+          window.clearTimeout(timer)
+          setStepState('relay', 'fail', { message: `Relay ping failed at ${target}`, details: { target } })
+          resolve()
+        })
+      } catch (error) {
+        if (done) return
+        done = true
+        window.clearTimeout(timer)
+        setStepState('relay', 'fail', { message: `Relay ping failed at ${target}`, details: { target, error: String(error) } })
+        resolve()
+      }
+    })
   }
 
   async function openRelayModal() {
-    setStepState('relay', 'working')
     modalTitleEl.textContent = 'Signaling relay script'
     modalMetaEl.textContent = `Path: ${RELAY_PATH}`
     modalBodyEl.textContent = `Path: ${RELAY_PATH}\n\n${RELAY_COMMANDS.join('\n')}\n\n${RELAY_CODE}`
     setActionButtons('relay')
     setIpControlsVisible(false)
     showCodeModal()
-    setStepState('relay', 'ok')
+    await pingRelay()
   }
 
   async function openPhoneModal() {
     setStepState('phone', 'working')
     modalTitleEl.textContent = 'Phone publisher HTML'
     modalBodyEl.textContent = ''
-    modalMetaEl.textContent = 'Loading local template…'
+    modalMetaEl.textContent = 'Preparing publisher HTML…'
     setActionButtons('phone')
     setIpControlsVisible(true)
-
     if (isLoopbackHost(defaultHost)) {
       ipModeEl.value = 'manual'
-      manualIpEl.value = '127.0.0.1'
+      manualIpEl.value = ''
       manualIpWrapEl.classList.remove('hidden')
-      modalMetaEl.textContent =
-        'Current URL hostname is loopback. Replace 127.0.0.1 with your PC LAN IP (for example 192.168.x.x), or open this web app via its LAN URL.'
+      modalMetaEl.textContent = 'Current URL hostname is loopback; enter your PC LAN IP before generating HTML.'
+      root.dataset.phonePublisherHtml = ''
+      setStepState('phone', 'fail', {
+        message: 'PC LAN IP is required when current hostname is loopback.',
+        details: { hostname: defaultHost },
+      })
     } else {
       ipModeEl.value = 'hostname'
       manualIpEl.value = defaultHost
-      manualIpWrapEl.classList.add('hidden')
-    }
-
-    cachedTemplate = FALLBACK_PHONE_TEMPLATE
-    try {
-      const bootstrapIp = (ipModeEl.value === 'manual' ? manualIpEl.value.trim() : defaultHost.trim()) || '127.0.0.1'
-      currentGeneratedPhoneHtml = renderPhoneHtml(bootstrapIp, cachedTemplate)
-      root.dataset.phonePublisherHtml = currentGeneratedPhoneHtml
-      modalBodyEl.textContent = currentGeneratedPhoneHtml
-      setStepState('phone', 'ok')
-    } catch {}
-    showCodeModal()
-
-    try {
-      cachedTemplate = await loadPhoneTemplate()
-      if (ipModeEl.value !== 'manual') {
-        manualIpEl.value = defaultHost
-      }
       updatePhoneHtmlFromInputs()
-    } catch (error) {
-      const message = `Failed to load local phone template: ${String(error)}`
-      modalMetaEl.textContent = message
-      setStepState('phone', 'fail', { message, details: { error: String(error) } })
     }
+    showCodeModal()
   }
 
   function openErrorModal(step: StepId) {
@@ -418,11 +505,11 @@ export function mountWebrtcServerTab(root: HTMLElement) {
 
   ipModeEl.addEventListener('change', () => {
     manualIpWrapEl.classList.toggle('hidden', ipModeEl.value !== 'manual')
-    if (cachedTemplate) updatePhoneHtmlFromInputs()
+    updatePhoneHtmlFromInputs()
   })
 
   manualIpEl.addEventListener('input', () => {
-    if (cachedTemplate && ipModeEl.value === 'manual') updatePhoneHtmlFromInputs()
+    if (ipModeEl.value === 'manual') updatePhoneHtmlFromInputs()
   })
 
   btnCopyPathEl.addEventListener('click', () => {
@@ -483,13 +570,12 @@ export function mountWebrtcServerTab(root: HTMLElement) {
         details: detail,
       }),
     ),
-    onAppEvent('WEBRTC_VIEWER_READY_SENT', () => setStepState('show', 'working')),
-    onAppEvent('WEBRTC_OFFER_RECEIVED', () => setStepState('track', 'working')),
-    onAppEvent('WEBRTC_REMOTE_TRACK_RECEIVED', () => {
+    onAppEvent('WEBRTC_VIEWER_READY', () => setStepState('show', 'working')),
+    onAppEvent('WEBRTC_REMOTE_TRACK', () => {
       setStepState('show', 'ok')
       setStepState('track', 'ok')
     }),
-    onAppEvent('WEBRTC_NEGOTIATION_FAILED', (detail) => {
+    onAppEvent('WEBRTC_REMOTE_TRACK_FAILED', (detail) => {
       const message = String(detail.message ?? 'WebRTC negotiation failed.')
       setStepState('show', 'fail', { message, details: detail })
       setStepState('track', 'fail', { message, details: detail })

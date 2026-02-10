@@ -1,5 +1,7 @@
 import asyncio
+import contextlib
 import websockets
+from websockets.exceptions import ConnectionClosed
 
 clients = set()
 
@@ -11,16 +13,23 @@ async def relay(websocket):
             for client in tuple(clients):
                 if client is websocket:
                     continue
-                try:
+                with contextlib.suppress(Exception):
                     await client.send(message)
-                except Exception:
-                    pass
+    except (ConnectionClosed, ConnectionResetError, OSError):
+        pass
     finally:
         clients.discard(websocket)
 
 
 async def main():
-    async with websockets.serve(relay, "0.0.0.0", 8765):
+    async with websockets.serve(
+        relay,
+        "0.0.0.0",
+        8765,
+        ping_interval=20,
+        ping_timeout=20,
+        close_timeout=2,
+    ):
         print("WebSocket relay listening on ws://0.0.0.0:8765")
         await asyncio.Future()
 
