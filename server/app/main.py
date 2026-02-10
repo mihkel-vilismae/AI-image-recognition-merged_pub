@@ -436,6 +436,40 @@ def create_app() -> FastAPI:
             "html": _phone_publisher_html(selected, signaling_port=8765),
         }
 
+    @app.get("/webrtc/network")
+    def webrtc_network() -> Dict[str, Any]:
+        candidates = _lan_ip_candidates()
+        warning = candidates == ["127.0.0.1"]
+        return {
+            "ipCandidates": candidates,
+            "selectedIp": candidates[0],
+            "warning": warning,
+        }
+
+    @app.get("/webrtc/relay-info")
+    def webrtc_relay_info() -> Dict[str, Any]:
+        relay_path = _ensure_signaling_relay_script()
+        return {
+            "relayPath": str(relay_path),
+            "relayExists": relay_path.exists(),
+            "runCommands": [f"cd {relay_path.parent}", "python server.py"],
+            "relayCode": relay_path.read_text(encoding="utf-8"),
+        }
+
+    @app.get("/webrtc/phone-publisher")
+    def webrtc_phone_publisher(ip: Optional[str] = Query(default=None)) -> Dict[str, Any]:
+        candidates = _lan_ip_candidates()
+        selected = ip.strip() if ip and ip.strip() else candidates[0]
+        if selected not in candidates:
+            candidates = sorted(set(candidates + [selected]))
+        warning = candidates == ["127.0.0.1"]
+        return {
+            "ipCandidates": candidates,
+            "selectedIp": selected,
+            "warning": warning,
+            "html": _phone_publisher_html(selected, signaling_port=8765),
+        }
+
     @app.post("/detect")
     @app.post("/api/detect")
     async def detect(file: UploadFile = File(...), conf: float = 0.25) -> Dict[str, Any]:
