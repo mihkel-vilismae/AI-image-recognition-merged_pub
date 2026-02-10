@@ -1,0 +1,8 @@
+- refactor into compononent:
+ - nav bar
+ - Ai provider
+    - make sure all elements work.
+    - make sure it works with the nav bar and the rest of the app.
+ - REAL TIME and Camera Controls
+
+ -- JOIN THE STREAM SOURCE
