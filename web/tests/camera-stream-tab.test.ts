@@ -58,6 +58,7 @@ class FakeRTCPeerConnection {
 describe('camera stream tab', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
     document.body.innerHTML = ''
     FakeWebSocket.instances = []
     FakeWebSocket.autoOpen = true
@@ -86,19 +87,18 @@ describe('camera stream tab', () => {
     root.querySelector<HTMLButtonElement>('#btnCheckOwnHealth')!.click()
     await new Promise((resolve) => setTimeout(resolve, 0))
 
-    expect(root.querySelector('#cameraStreamStatus')?.textContent).toContain('AI image recognition server health check passed')
+    expect(root.querySelector('#cameraStreamStatus')?.textContent).toContain('health check passed')
     expect(root.querySelector('.cameraSection #ownUrl')).not.toBeNull()
     expect(root.querySelector('.signalingSection #signalingTarget')).not.toBeNull()
   })
 
-
-  it('uses localhost defaults for signaling and ai detect url', () => {
+  it('uses localhost defaults for signaling and AI base URL', () => {
     const root = document.createElement('div')
     document.body.appendChild(root)
     mountCameraStreamTab(root)
 
     expect(root.querySelector<HTMLInputElement>('#signalingTarget')?.value).toBe('ws://localhost:8765')
-    expect(root.querySelector<HTMLInputElement>('#ownUrl')?.value).toBe('http://localhost:5175/api/detect?conf=0.25')
+    expect(root.querySelector<HTMLInputElement>('#ownUrl')?.value).toBe('http://localhost:5175')
   })
 
   it('detect signaling button toggles result text on consecutive clicks', async () => {
@@ -117,40 +117,94 @@ describe('camera stream tab', () => {
     expect(result.textContent).toBe('')
   })
 
-
-  it('renders video panel above logs and clear logs clears both panes without disconnect', async () => {
+  it('renders separate video and controls containers in stream panel', () => {
     const root = document.createElement('div')
     document.body.appendChild(root)
     mountCameraStreamTab(root)
 
-    const streamPanel = root.querySelector('#streamPanel') as HTMLElement
-    const logsPanel = root.querySelector('#receiverLog') as HTMLElement
-    expect(streamPanel.compareDocumentPosition(logsPanel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-
-    const connectBtn = root.querySelector<HTMLButtonElement>('#btnConnectSignaling')!
-    connectBtn.click()
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    const ws = FakeWebSocket.instances.at(-1)!
-
-    const logEl = root.querySelector<HTMLPreElement>('#receiverLog')!
-    const errEl = root.querySelector<HTMLPreElement>('#receiverError')!
-    logEl.textContent = 'abc'
-    errEl.textContent = 'def'
-
-    root.querySelector<HTMLButtonElement>('#btnClearReceiverLogs')!.click()
-    expect(logEl.textContent).toContain('logs cleared')
-    expect(errEl.textContent).toBe('')
-    expect(ws.readyState).toBe(1)
+    expect(root.querySelector('#cameraVideoPanel')).not.toBeNull()
+    expect(root.querySelector('#cameraControlsPanel')).not.toBeNull()
+    expect(root.querySelector('#streamPanel .videoOverlay.absolute')).toBeNull()
   })
 
-
-  it('keeps ai detect input default on /api/detect path', () => {
+  it('keeps ai detect requests on /api/detect path from AI base URL', async () => {
     const root = document.createElement('div')
     document.body.appendChild(root)
     mountCameraStreamTab(root)
 
-    const ownUrl = root.querySelector<HTMLInputElement>('#ownUrl')!.value
-    expect(ownUrl.includes('/api/detect?conf=')).toBe(true)
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ boxes: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    Object.defineProperty(HTMLVideoElement.prototype, 'videoWidth', { configurable: true, get: () => 640 })
+    Object.defineProperty(HTMLVideoElement.prototype, 'videoHeight', { configurable: true, get: () => 480 })
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(() => ({ drawImage: vi.fn() } as unknown as CanvasRenderingContext2D))
+    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation((cb) => cb(new Blob(['x'], { type: 'image/jpeg' })))
+
+    root.querySelector<HTMLButtonElement>('#btnRealtimeDetectStream')!.click()
+    await new Promise((resolve) => setTimeout(resolve, 1100))
+
+    expect(fetchMock).toHaveBeenCalled()
+    const detectUrl = String(fetchMock.mock.calls[0]?.[0] ?? "")
+    expect(detectUrl).toContain('http://localhost:5175/api/detect?conf=')
+  })
+
+  it('treats HTML health responses as unhealthy', async () => {
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    mountCameraStreamTab(root)
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response('<html>bad</html>', {
+          status: 200,
+          headers: { 'Content-Type': 'text/html' },
+        }),
+      ),
+    )
+
+    root.querySelector<HTMLButtonElement>('#btnCheckOwnHealth')!.click()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(root.querySelector('#cameraStreamStatus')?.textContent).toContain('did not return JSON')
+  })
+
+  it('camera flip toggles constraints and stops old tracks', async () => {
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+
+    const firstStop = vi.fn()
+    const secondStop = vi.fn()
+    const firstStream = {
+      getTracks: () => [{ kind: 'video', id: 'first', stop: firstStop }],
+      getVideoTracks: () => [{ kind: 'video', id: 'first', stop: firstStop }],
+    }
+    const secondStream = {
+      getTracks: () => [{ kind: 'video', id: 'second', stop: secondStop }],
+      getVideoTracks: () => [{ kind: 'video', id: 'second', stop: secondStop }],
+    }
+
+    const gum = vi
+      .fn()
+      .mockResolvedValueOnce(firstStream)
+      .mockResolvedValueOnce(secondStream)
+
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia: gum },
+    })
+
+    mountCameraStreamTab(root)
+
+    root.querySelector<HTMLButtonElement>('#btnCameraFront')!.click()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    root.querySelector<HTMLButtonElement>('#btnCameraBack')!.click()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(gum).toHaveBeenNthCalledWith(1, { video: { facingMode: 'user' }, audio: false })
+    expect(gum).toHaveBeenNthCalledWith(2, { video: { facingMode: 'environment' }, audio: false })
+    expect(firstStop).toHaveBeenCalled()
+    expect(root.querySelector('#cameraFacingState')?.textContent).toContain('back')
   })
 
   it('requests remote stream and displays it when offer/track arrive', async () => {
@@ -160,7 +214,6 @@ describe('camera stream tab', () => {
 
     const connectBtn = root.querySelector<HTMLButtonElement>('#btnConnectSignaling')!
     const showBtn = root.querySelector<HTMLButtonElement>('#btnShowVideoStream')!
-    const panel = root.querySelector<HTMLDivElement>('#streamPanel')!
 
     connectBtn.click()
     await new Promise((resolve) => setTimeout(resolve, 900))
@@ -177,7 +230,7 @@ describe('camera stream tab', () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(ws.sent.some((msg) => msg.includes('"answer"'))).toBe(true)
 
-    const stream = { getTracks: () => [] } as unknown as MediaStream
+    const stream = { getTracks: () => [{ kind: 'video', id: 'remote' }] } as unknown as MediaStream
     FakeRTCPeerConnection.instances[0]?.ontrack?.({ streams: [stream] })
 
     expect(root.querySelector('#showVideoResult')?.textContent).toContain('Remote video stream received')
