@@ -4,7 +4,6 @@ import {
   buildHealthUrl,
   checkServerHealth,
   DEFAULT_AI_BASE_URL,
-  DEFAULT_PC_IP,
   DEFAULT_SIGNALING_PORT,
   extractIpv4HostFromText,
   normalizeAiBaseUrl,
@@ -596,17 +595,18 @@ export function mountCameraStreamTab(root: HTMLElement) {
   btnCheckEl.addEventListener('click', async () => {
     const aiBaseUrl = normalizeAiBaseUrl(ownUrlEl.value)
     ownUrlEl.value = aiBaseUrl
-    const host = extractIpv4HostFromText(aiBaseUrl) ?? DEFAULT_PC_IP
     setScanIndicator(scanIndicatorEl, 'searching')
-    statusEl.textContent = `Checking selected AI image recognition server health endpoint at ${buildHealthUrl(aiBaseUrl)}…`
-    const health = await checkServerHealth(host)
+    const resolvedHealthUrl = buildHealthUrl(aiBaseUrl)
+    statusEl.textContent = `Checking selected AI image recognition server health endpoint at ${resolvedHealthUrl}…`
+    logger.log('HEALTH', 'resolved health url', { resolvedHealthUrl, aiBaseUrl })
+    const health = await checkServerHealth(aiBaseUrl)
 
     if (health.ok) {
       statusEl.textContent = health.verified
         ? 'AI image recognition server health check passed. The selected host is responding with a valid JSON health payload.'
         : 'AI image recognition server is reachable, but health verification is CORS-limited (opaque/no-cors response).'
       setScanIndicator(scanIndicatorEl, 'found')
-      logger.log('HEALTH', 'health check passed', { aiBaseUrl, healthUrl: buildHealthUrl(aiBaseUrl), reason: health.reason })
+      logger.log('HEALTH', 'health check passed', { aiBaseUrl, healthUrl: health.healthUrl, reason: health.reason })
       return
     }
 
@@ -614,7 +614,7 @@ export function mountCameraStreamTab(root: HTMLElement) {
       ? 'Health endpoint did not return JSON; treated as unhealthy.'
       : `Health check failed (${health.reason}).`
     statusEl.textContent = `AI image recognition server health check failed. ${reason}`
-    logger.warn('HEALTH', 'health check failed', { aiBaseUrl, healthUrl: buildHealthUrl(aiBaseUrl), reason: health.reason })
+    logger.warn('HEALTH', 'health check failed', { aiBaseUrl, healthUrl: health.healthUrl, reason: health.reason })
     setScanIndicator(scanIndicatorEl, 'failed')
   })
 

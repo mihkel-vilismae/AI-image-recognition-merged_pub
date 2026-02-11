@@ -94,8 +94,8 @@ export function hasVideoStreamSignal(message: unknown): boolean {
   return false
 }
 
-export async function checkServerHealth(host: string, timeoutMs = 2500): Promise<{ ok: boolean; verified: boolean; reason: string }> {
-  const baseUrl = normalizeAiBaseUrl(`http://${host}:${DEFAULT_SERVER_PORT}`)
+export async function checkServerHealth(aiBaseUrl: string, timeoutMs = 2500): Promise<{ ok: boolean; verified: boolean; reason: string; healthUrl: string }> {
+  const baseUrl = normalizeAiBaseUrl(aiBaseUrl)
   const healthUrl = buildHealthUrl(baseUrl)
   const corsController = new AbortController()
   const corsTimer = window.setTimeout(() => corsController.abort(), timeoutMs)
@@ -106,16 +106,16 @@ export async function checkServerHealth(host: string, timeoutMs = 2500): Promise
       cache: 'no-store',
       signal: corsController.signal,
     })
-    if (!res.ok) return { ok: false, verified: false, reason: `http_${res.status}` }
+    if (!res.ok) return { ok: false, verified: false, reason: `http_${res.status}`, healthUrl }
     const contentType = res.headers.get('content-type') || ''
     if (!contentType.toLowerCase().includes('application/json')) {
-      return { ok: false, verified: false, reason: 'non_json_response' }
+      return { ok: false, verified: false, reason: 'non_json_response', healthUrl }
     }
     const payload = await res.json().catch(() => null)
-    if (payload && payload.ok === true) return { ok: true, verified: true, reason: 'health_ok' }
-    return { ok: false, verified: false, reason: 'bad_payload' }
+    if (payload && payload.ok === true) return { ok: true, verified: true, reason: 'health_ok', healthUrl }
+    return { ok: false, verified: false, reason: 'bad_payload', healthUrl }
   } catch (err) {
-    if (!isLikelyCorsFetchError(err)) return { ok: false, verified: false, reason: 'network_error' }
+    if (!isLikelyCorsFetchError(err)) return { ok: false, verified: false, reason: 'network_error', healthUrl }
 
     const noCorsController = new AbortController()
     const noCorsTimer = window.setTimeout(() => noCorsController.abort(), timeoutMs)
@@ -126,9 +126,9 @@ export async function checkServerHealth(host: string, timeoutMs = 2500): Promise
         cache: 'no-store',
         signal: noCorsController.signal,
       })
-      return { ok: true, verified: false, reason: 'cors_opaque_reachable' }
+      return { ok: true, verified: false, reason: 'cors_opaque_reachable', healthUrl }
     } catch {
-      return { ok: false, verified: false, reason: 'cors_blocked_or_unreachable' }
+      return { ok: false, verified: false, reason: 'cors_blocked_or_unreachable', healthUrl }
     } finally {
       window.clearTimeout(noCorsTimer)
     }
@@ -141,13 +141,13 @@ export async function scanSubnetForServer(seedHost: string): Promise<{ host: str
   const candidates = buildSubnetIpv4Candidates(seedHost)
   if (candidates.length === 0) return null
 
-  const seedResult = await checkServerHealth(candidates[0], 2500)
+  const seedResult = await checkServerHealth(`http://${candidates[0]}:${DEFAULT_SERVER_PORT}`, 2500)
   if (seedResult.ok) return { host: candidates[0], health: seedResult }
 
   const chunkSize = 12
   for (let i = 1; i < candidates.length; i += chunkSize) {
     const chunk = candidates.slice(i, i + chunkSize)
-    const checks = chunk.map(async (host) => ({ host, health: await checkServerHealth(host, 1200) }))
+    const checks = chunk.map(async (host) => ({ host, health: await checkServerHealth(`http://${host}:${DEFAULT_SERVER_PORT}`, 1200) }))
     const results = await Promise.all(checks)
     const found = results.find((r) => r.health.ok)
     if (found) return found
