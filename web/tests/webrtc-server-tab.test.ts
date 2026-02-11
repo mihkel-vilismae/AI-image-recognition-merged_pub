@@ -84,6 +84,33 @@ describe('webrtc server tab', () => {
     expect(backendStatus.classList.contains('systemStatus--offline') || backendStatus.classList.contains('systemStatus--paused')).toBe(true)
   })
 
+
+  it('never polls frontend /health and derives relay health from signaling host', async () => {
+    localStorage.setItem('vidcon.signalingUrl', 'ws://localhost:8765')
+
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL) =>
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const root = document.createElement('div')
+    root.id = 'app'
+    document.body.appendChild(root)
+
+    initSinglePageApp(root)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const calledUrls = fetchMock.mock.calls.map((call) => String(call[0]))
+    expect(calledUrls.some((url) => url.includes('localhost:5173/health'))).toBe(false)
+
+    const relayHealthCell = root.querySelector<HTMLElement>('[data-component="relay"] [data-field="healthUrl"]')
+    expect(relayHealthCell?.textContent).toContain('http://localhost:8766/health')
+  })
+
   it('updates dot colors based on emitted events', () => {
     const root = document.createElement('div')
     root.id = 'app'
