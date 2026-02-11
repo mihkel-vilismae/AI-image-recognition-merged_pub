@@ -8,4 +8,8 @@ def test_health_ok():
     client = TestClient(app)
     r = client.get("/health")
     assert r.status_code == 200
-    assert r.json() == {"ok": True}
+    payload = r.json()
+    assert payload["ok"] is True
+    assert payload["service"] == "ai-server"
+    assert isinstance(payload.get("time"), str)
+    assert isinstance(payload.get("version"), str)
