@@ -195,6 +195,7 @@ const SIGNALING_URL = "${relayUrl}";
 let pc, ws, stream;
 let sentCandidates = 0;
 let recvCandidates = 0;
+let heartbeatTimer = null;
 const logEl = document.getElementById("log");
 const errorEl = document.getElementById("error");
 const ts = () => new Date().toISOString();
@@ -214,6 +215,11 @@ document.getElementById("btnCopyLogs").onclick = async () => {
   const text = "LOG\\n" + logEl.textContent + "\\nERROR\\n" + errorEl.textContent;
   try { await navigator.clipboard.writeText(text); push("INFO", "STEP", "logs copied"); }
   catch (e) { push("ERR", "ERR", "copy logs failed", String(e)); }
+};
+const sendHeartbeat = () => {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const v = stream ? stream.getVideoTracks()[0] : null;
+  ws.send(JSON.stringify({ type: "publisher_heartbeat", ts: Date.now(), camera: { active: Boolean(v), trackReadyState: v ? v.readyState : "none", width: v && v.getSettings ? v.getSettings().width : null, height: v && v.getSettings ? v.getSettings().height : null }, webrtc: { sending: pc ? pc.connectionState === "connected" : false } }));
 };
 document.getElementById("btnStart").onclick = async () => {
   const btn = document.getElementById("btnStart");
@@ -259,6 +265,8 @@ document.getElementById("btnStart").onclick = async () => {
       } catch (err) {
         push("ERR", "WEBRTC", "offer flow failed", { name: err && err.name, message: err && err.message, raw: String(err) });
       }
+      sendHeartbeat();
+      heartbeatTimer = setInterval(sendHeartbeat, 1500);
     };
     ws.onmessage = async (event) => {
       push("WS", "WS", "message", { size: String(event.data || "").length });
@@ -289,7 +297,10 @@ document.getElementById("btnStart").onclick = async () => {
       }
     };
     ws.onerror = () => push("ERR", "WS", "error");
-    ws.onclose = (event) => push("ERR", "WS", "close", { code: event.code, reason: event.reason, wasClean: event.wasClean });
+    ws.onclose = (event) => {
+      if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+      push("ERR", "WS", "close", { code: event.code, reason: event.reason, wasClean: event.wasClean });
+    };
   } catch (e) {
     push("ERR", "ERR", "start flow failed", { name: e && e.name, message: e && e.message, raw: String(e) });
     btn.disabled = false;
