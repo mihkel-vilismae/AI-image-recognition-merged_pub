@@ -1,6 +1,9 @@
 import './tab-style.css'
 
 import { onAppEvent } from '../common'
+import { DEFAULT_AI_BASE_URL, getAiBaseUrlFromStorage, STORAGE_SIGNALING_URL_KEY } from './shared-config'
+import { buildHealthTargets } from './health-targets'
+import { checkHealth, type HealthCheckResult, type HealthKind } from './health-check'
 
 type StepId = 'relay' | 'phone' | 'connect' | 'show' | 'track'
 type StepState = 'idle' | 'working' | 'ok' | 'fail'
@@ -18,8 +21,10 @@ type ResolvedConfig = {
   relayPort: number
   relayUrl: string
   relayHealthUrl: string
-  sameOriginHealthUrl: string
+  aiHealthUrl: string
+  webUiUrl: string
   pcHealthUrl: string
+  pcKind: 'pc' | 'webUi'
   source: 'query-relay' | 'query-ip' | 'storage' | 'hostname' | 'manual'
   unknownReason?: string
 }
@@ -161,21 +166,21 @@ function componentStateFromLastSeen(lastSeenMs: number): ComponentState {
   return 'offline'
 }
 
-async function pollHealth(component: 'phone' | 'pc' | 'relay' | 'backend', url: string, timeoutMs = 1800): Promise<boolean> {
-  globalHealthControllers[component]?.abort()
-  const controller = new AbortController()
-  globalHealthControllers[component] = controller
-  const timer = window.setTimeout(() => controller.abort(), timeoutMs)
-  try {
-    const response = await fetch(url, { cache: 'no-store', signal: controller.signal })
-    if (!response.ok) return false
-    const payload = await response.json().catch(() => null)
-    return Boolean(payload && payload.ok === true)
-  } catch {
-    return false
-  } finally {
-    window.clearTimeout(timer)
-  }
+async function pollHealth(component: 'pc' | 'relay' | 'backend', kind: HealthKind, url: string): Promise<HealthCheckResult> {
+  const result = await checkHealth({ kind, url, timeoutMs: 1800 })
+  return result
+}
+
+function formatHealthFailureDetails(result: HealthCheckResult): string {
+  const parts = [
+    `url=${result.url}`,
+    `status=${String(result.status)}`,
+    `contentType=${result.contentType || 'unknown'}`,
+  ]
+  if (result.error) parts.push(`error=${result.error}`)
+  if (result.parseError) parts.push(`parseError=${result.parseError}`)
+  if (result.preview) parts.push(`preview=${result.preview.replace(/\s+/g, ' ').trim()}`)
+  return parts.join(' | ')
 }
 
 function buildPhonePublisherHtml(relayUrl: string) {
@@ -195,6 +200,14 @@ const SIGNALING_URL = "${relayUrl}";
 let pc, ws, stream;
 let sentCandidates = 0;
 let recvCandidates = 0;
+let heartbeatTimer = null;
+let remoteAnswerApplied = false;
+let remoteAnswerSdp = "";
+let applyingRemoteAnswer = false;
+let currentOfferSdp = "";
+let lastIgnoredAnswerKey = "";
+let pendingRemoteCandidates = [];
+const seenRemoteCandidateKeys = new Set();
 const logEl = document.getElementById("log");
 const errorEl = document.getElementById("error");
 const ts = () => new Date().toISOString();
@@ -215,6 +228,92 @@ document.getElementById("btnCopyLogs").onclick = async () => {
   try { await navigator.clipboard.writeText(text); push("INFO", "STEP", "logs copied"); }
   catch (e) { push("ERR", "ERR", "copy logs failed", String(e)); }
 };
+const sendHeartbeat = () => {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const v = stream ? stream.getVideoTracks()[0] : null;
+  ws.send(JSON.stringify({ type: "publisher_heartbeat", ts: Date.now(), camera: { active: Boolean(v), trackReadyState: v ? v.readyState : "none", width: v && v.getSettings ? v.getSettings().width : null, height: v && v.getSettings ? v.getSettings().height : null }, webrtc: { sending: pc ? pc.connectionState === "connected" : false } }));
+};
+
+function candidateKey(candidate) {
+  if (!candidate || typeof candidate !== "object") return "invalid";
+  return String(candidate.candidate || "") + "|" + String(candidate.sdpMid || "") + "|" + String(candidate.sdpMLineIndex || "");
+}
+function parseIncomingMessage(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const msg = raw;
+  if (typeof msg.type === "string") return msg;
+  if (typeof msg.sdp === "string") {
+    const inferredType = pc && pc.signalingState === "have-local-offer" ? "answer" : "offer";
+    push("INFO", "WS", "missing type; inferred", { inferredType });
+    return { ...msg, type: inferredType };
+  }
+  return null;
+}
+function noteIgnoredAnswer(reason, data) {
+  const key = reason + "|" + JSON.stringify(data || {});
+  if (key === lastIgnoredAnswerKey) return;
+  lastIgnoredAnswerKey = key;
+  push("INFO", "WEBRTC", reason, data);
+}
+function markOfferCreated(offerSdp) {
+  currentOfferSdp = String(offerSdp || "");
+  remoteAnswerApplied = false;
+  remoteAnswerSdp = "";
+  applyingRemoteAnswer = false;
+  pendingRemoteCandidates = [];
+  lastIgnoredAnswerKey = "";
+}
+
+async function applyRemoteAnswerOnce(answerSdp) {
+  if (!pc) {
+    noteIgnoredAnswer("answer ignored: no peer connection");
+    return;
+  }
+  if (applyingRemoteAnswer) {
+    noteIgnoredAnswer("answer ignored: apply in-flight");
+    return;
+  }
+  if (remoteAnswerApplied) {
+    if (answerSdp === remoteAnswerSdp) {
+      noteIgnoredAnswer("duplicate answer ignored");
+      return;
+    }
+    noteIgnoredAnswer("different answer ignored after apply", { signalingState: pc.signalingState });
+    return;
+  }
+  if (pc.signalingState !== "have-local-offer") {
+    noteIgnoredAnswer("answer ignored due to signalingState", { signalingState: pc.signalingState });
+    return;
+  }
+
+  applyingRemoteAnswer = true;
+  try {
+    push("STEP", "WEBRTC", "setRemoteDescription start");
+    await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+    remoteAnswerApplied = true;
+    remoteAnswerSdp = answerSdp;
+    lastIgnoredAnswerKey = "";
+    push("STEP", "WEBRTC", "setRemoteDescription ok");
+    if (pendingRemoteCandidates.length > 0) {
+      const queue = pendingRemoteCandidates.slice();
+      pendingRemoteCandidates = [];
+      for (const candidate of queue) {
+        try {
+          await pc.addIceCandidate(candidate);
+          recvCandidates += 1;
+        } catch (err) {
+          push("ERR", "WEBRTC", "queued addIceCandidate failed", { raw: String(err) });
+        }
+      }
+      push("WEBRTC", "WEBRTC", "queued candidates flushed", { flushed: queue.length, recvCandidates });
+    }
+  } catch (err) {
+    push("ERR", "WEBRTC", "setRemoteDescription failed", { name: err && err.name, message: err && err.message, raw: String(err), signalingState: pc.signalingState });
+  } finally {
+    applyingRemoteAnswer = false;
+  }
+}
+
 document.getElementById("btnStart").onclick = async () => {
   const btn = document.getElementById("btnStart");
   btn.disabled = true;
@@ -253,32 +352,61 @@ document.getElementById("btnStart").onclick = async () => {
         push("STEP", "WEBRTC", "createOffer ok", { sdpSize: (offer.sdp || "").length });
         push("STEP", "WEBRTC", "setLocalDescription start");
         await pc.setLocalDescription(offer);
+        markOfferCreated(offer.sdp);
         push("STEP", "WEBRTC", "setLocalDescription ok");
         ws.send(JSON.stringify({ type: "offer", sdp: offer.sdp }));
         push("WS", "WS", "offer sent", { sdpSize: (offer.sdp || "").length });
       } catch (err) {
         push("ERR", "WEBRTC", "offer flow failed", { name: err && err.name, message: err && err.message, raw: String(err) });
       }
+      sendHeartbeat();
+      heartbeatTimer = setInterval(sendHeartbeat, 1500);
     };
     ws.onmessage = async (event) => {
       push("WS", "WS", "message", { size: String(event.data || "").length });
-      let msg;
+      let parsed;
       try {
-        msg = JSON.parse(event.data);
+        parsed = JSON.parse(event.data);
       } catch (err) {
         push("ERR", "WS", "json parse failed", { raw: String(event.data), error: String(err) });
         return;
       }
-      if (msg.type === "answer") {
-        try {
-          push("STEP", "WEBRTC", "setRemoteDescription start");
-          await pc.setRemoteDescription({ type: "answer", sdp: msg.sdp });
-          push("STEP", "WEBRTC", "setRemoteDescription ok");
-        } catch (err) {
-          push("ERR", "WEBRTC", "setRemoteDescription failed", { name: err && err.name, message: err && err.message, raw: String(err) });
-        }
+
+      const msg = parseIncomingMessage(parsed);
+      if (!msg || typeof msg.type !== "string") {
+        push("INFO", "WS", "message ignored: missing/unknown type");
+        return;
       }
+
+      if (msg.type === "answer") {
+        if (typeof msg.sdp !== "string" || !msg.sdp) {
+          push("INFO", "WEBRTC", "answer ignored: missing sdp");
+          return;
+        }
+        await applyRemoteAnswerOnce(msg.sdp);
+        return;
+      }
+
       if (msg.type === "candidate") {
+        if (!msg.candidate) return;
+        const key = candidateKey(msg.candidate);
+        if (seenRemoteCandidateKeys.has(key)) {
+          push("INFO", "WEBRTC", "duplicate candidate ignored");
+          return;
+        }
+        seenRemoteCandidateKeys.add(key);
+
+        if (!pc) {
+          push("INFO", "WEBRTC", "candidate ignored: no peer connection");
+          return;
+        }
+
+        if (!pc.remoteDescription) {
+          pendingRemoteCandidates.push(msg.candidate);
+          push("INFO", "WEBRTC", "candidate queued until remote description is set", { queued: pendingRemoteCandidates.length });
+          return;
+        }
+
         try {
           recvCandidates += 1;
           await pc.addIceCandidate(msg.candidate);
@@ -289,7 +417,10 @@ document.getElementById("btnStart").onclick = async () => {
       }
     };
     ws.onerror = () => push("ERR", "WS", "error");
-    ws.onclose = (event) => push("ERR", "WS", "close", { code: event.code, reason: event.reason, wasClean: event.wasClean });
+    ws.onclose = (event) => {
+      if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+      push("ERR", "WS", "close", { code: event.code, reason: event.reason, wasClean: event.wasClean });
+    };
   } catch (e) {
     push("ERR", "ERR", "start flow failed", { name: e && e.name, message: e && e.message, raw: String(e) });
     btn.disabled = false;
@@ -318,9 +449,9 @@ export function mountWebrtcServerTab(root: HTMLElement) {
             <thead><tr><th>Component</th><th>IP</th><th>Health URL / Runtime</th><th>Health</th><th>Status</th><th>Details</th></tr></thead>
             <tbody>
               <tr data-component="phone"><td>This device (phone publisher)</td><td data-field="ip">unknown</td><td data-field="healthUrl">runtime-only</td><td><input data-health-toggle="phone" type="checkbox" checked /></td><td><span class="systemStatus systemStatus--offline" data-field="status"></span></td><td data-field="details">waiting</td></tr>
-              <tr data-component="pc"><td>PC receiver</td><td data-field="ip">unknown</td><td data-field="healthUrl">unknown</td><td><input data-health-toggle="pc" type="checkbox" checked /></td><td><span class="systemStatus systemStatus--offline" data-field="status"></span></td><td data-field="details">waiting</td></tr>
+              <tr data-component="pc"><td>PC receiver (optional)</td><td data-field="ip">unknown</td><td data-field="healthUrl">unknown</td><td><input data-health-toggle="pc" type="checkbox" checked /></td><td><span class="systemStatus systemStatus--offline" data-field="status"></span></td><td data-field="details">waiting</td></tr>
               <tr data-component="relay"><td>WS signaling relay</td><td data-field="ip">unknown</td><td data-field="healthUrl">unknown</td><td><input data-health-toggle="relay" type="checkbox" checked /></td><td><span class="systemStatus systemStatus--offline" data-field="status"></span></td><td data-field="details">waiting</td></tr>
-              <tr data-component="backend"><td>Health endpoint (same-origin /health)</td><td data-field="ip">same-origin</td><td data-field="healthUrl">unknown</td><td><input data-health-toggle="backend" type="checkbox" checked /></td><td><span class="systemStatus systemStatus--offline" data-field="status"></span></td><td data-field="details">waiting</td></tr>
+              <tr data-component="backend"><td>AI server</td><td data-field="ip">unknown</td><td data-field="healthUrl">unknown</td><td><input data-health-toggle="backend" type="checkbox" checked /></td><td><span class="systemStatus systemStatus--offline" data-field="status"></span></td><td data-field="details">waiting</td></tr>
             </tbody>
           </table>
           <div id="resolvedConfig" class="hint mono"></div>
@@ -410,6 +541,20 @@ export function mountWebrtcServerTab(root: HTMLElement) {
   let pollTimer: number | null = null
   const lastSignals = { phone: 0, pc: 0, phoneCameraStarted: false, phoneWsConnected: false, phoneWebrtcConnected: false }
   const healthEnabled: Record<'phone' | 'pc' | 'relay' | 'backend', boolean> = { phone: true, pc: true, relay: true, backend: true }
+  const lastHealthFailureKey: Partial<Record<'relay' | 'backend' | 'pc', string>> = {}
+
+  function logHealthFailureOnce(component: 'relay' | 'backend' | 'pc', result: HealthCheckResult) {
+    const details = formatHealthFailureDetails(result)
+    const key = `${result.url}|${details}`
+    if (lastHealthFailureKey[component] === key) return
+    lastHealthFailureKey[component] = key
+    const tag = component === 'backend' ? 'AI' : (component === 'relay' ? 'RELAY' : 'PC')
+    console.warn(`[HEALTH][${tag}] check failed`, details)
+  }
+
+  function clearHealthFailure(component: 'relay' | 'backend' | 'pc') {
+    lastHealthFailureKey[component] = ''
+  }
   
   const codeModalEl = root.querySelector<HTMLDivElement>('#webrtcCodeModal')!
   const modalTitleEl = root.querySelector<HTMLElement>('#webrtcModalTitle')!
@@ -489,7 +634,7 @@ export function mountWebrtcServerTab(root: HTMLElement) {
     const ipParam = params.get('ip')?.trim() || ''
     const pcBaseParam = params.get('pcBase')?.trim() || ''
 
-    const storageRelay = localStorage.getItem(STORAGE_RELAY_KEY)?.trim() || ''
+    const storageRelay = localStorage.getItem(STORAGE_RELAY_KEY)?.trim() || localStorage.getItem(STORAGE_SIGNALING_URL_KEY)?.trim() || ''
     const storageIp = localStorage.getItem(STORAGE_IP_KEY)?.trim() || ''
     const storagePcBase = localStorage.getItem(STORAGE_PC_BASE_KEY)?.trim() || ''
     const hostname = (window.location.hostname || '').trim()
@@ -532,12 +677,29 @@ export function mountWebrtcServerTab(root: HTMLElement) {
       : 'hostname is loopback/empty; use ?relay=ws://<ip>:8765 or manual IP')
 
     const relayUrl = relayHost ? `ws://${relayHost}:${relayPort}` : ''
-    const relayHealthUrl = relayHost ? `http://${relayHost}:8766/health` : 'runtime-only'
-    const sameOriginHealthUrl = window.location.protocol === 'file:' ? 'runtime-only' : `${window.location.origin}/health`
-    const pcBase = pcBaseParam || storagePcBase || (window.location.protocol === 'file:' ? '' : window.location.origin)
-    const pcHealthUrl = pcBase ? `${pcBase.replace(/\/$/, '')}/health` : 'runtime-only'
+    const aiBaseUrl = getAiBaseUrlFromStorage() || DEFAULT_AI_BASE_URL
+    const webUiBaseUrl = window.location.protocol === 'file:' ? '' : window.location.origin
+    const pcBaseUrl = (pcBaseParam || storagePcBase || '').trim()
+    const targets = buildHealthTargets({
+      aiBaseUrl,
+      webUiBaseUrl,
+      relayHost,
+      relayPort,
+      pcBaseUrl,
+    })
 
-    return { relayHost, relayPort, relayUrl, relayHealthUrl, sameOriginHealthUrl, pcHealthUrl, source, unknownReason }
+    return {
+      relayHost,
+      relayPort,
+      relayUrl,
+      relayHealthUrl: targets.relayHealthUrl,
+      aiHealthUrl: targets.aiHealthUrl,
+      webUiUrl: targets.webUiUrl,
+      pcHealthUrl: targets.pcHealthUrl,
+      pcKind: targets.pcKind,
+      source,
+      unknownReason,
+    }
   }
 
 
@@ -579,7 +741,7 @@ export function mountWebrtcServerTab(root: HTMLElement) {
     const phoneEnabled = loadHealthToggle('phone', phoneHealth)
     const pcEnabled = loadHealthToggle('pc', config.pcHealthUrl)
     const relayEnabled = loadHealthToggle('relay', config.relayHealthUrl)
-    const backendEnabled = loadHealthToggle('backend', config.sameOriginHealthUrl)
+    const backendEnabled = loadHealthToggle('backend', config.aiHealthUrl)
 
     healthEnabled.phone = phoneEnabled
     healthEnabled.pc = pcEnabled
@@ -596,9 +758,10 @@ export function mountWebrtcServerTab(root: HTMLElement) {
     if (backendToggle) backendToggle.checked = backendEnabled
 
     setComponent('phone', { ip: phoneIp, healthUrl: phoneHealth, details: phoneDetails, state: phoneEnabled ? phoneState : 'paused' })
-    setComponent('pc', { ip: config.relayHost || 'unknown', healthUrl: config.pcHealthUrl, details: config.pcHealthUrl === 'runtime-only' ? 'set ?pcBase=http://<pc>' : 'polling /health', state: pcEnabled ? 'offline' : 'paused' })
+    const pcLabel = config.pcKind === 'pc' ? 'polling custom PC /health' : 'web UI check uses / (not /health)'
+    setComponent('pc', { ip: window.location.hostname || 'unknown', healthUrl: config.pcKind === 'pc' ? config.pcHealthUrl : config.webUiUrl, details: pcLabel, state: pcEnabled ? 'online' : 'paused' })
     setComponent('relay', { ip: config.relayHost || 'unknown', healthUrl: config.relayHealthUrl, details: config.unknownReason ?? 'polling relay /health', state: relayEnabled ? 'offline' : 'paused' })
-    setComponent('backend', { ip: window.location.hostname || 'unknown', healthUrl: config.sameOriginHealthUrl, details: config.sameOriginHealthUrl === 'runtime-only' ? 'no http health (file://)' : 'polling same-origin /health', state: backendEnabled ? 'offline' : 'paused' })
+    setComponent('backend', { ip: (() => { try { return new URL(config.aiHealthUrl).hostname } catch { return 'unknown' } })(), healthUrl: config.aiHealthUrl, details: config.aiHealthUrl === 'runtime-only' ? 'AI server URL unavailable' : 'polling AI /health JSON', state: backendEnabled ? 'offline' : 'paused' })
   }
 
   function updatePhoneHtmlFromInputs() {
@@ -629,29 +792,53 @@ export function mountWebrtcServerTab(root: HTMLElement) {
     renderResolved()
 
     if (healthEnabled.relay && config.relayHealthUrl !== 'runtime-only') {
-      const relayOk = await pollHealth('relay', config.relayHealthUrl)
-      setComponent('relay', { state: relayOk ? 'online' : 'offline' })
-      if (!relayOk) console.warn('[WEBRTC][HEALTH] relay health failed', config.relayHealthUrl)
+      const relayResult = await pollHealth('relay', 'relay', config.relayHealthUrl)
+      setComponent('relay', {
+        state: relayResult.ok ? 'online' : 'offline',
+        details: relayResult.ok ? 'relay /health JSON ok' : relayResult.error || 'relay health failed',
+      })
+      if (relayResult.ok) clearHealthFailure('relay')
+      else logHealthFailureOnce('relay', relayResult)
     } else {
       globalHealthControllers.relay?.abort()
+      clearHealthFailure('relay')
       setComponent('relay', { state: 'paused', details: 'health polling disabled' })
     }
 
-    if (healthEnabled.backend && config.sameOriginHealthUrl !== 'runtime-only') {
-      const backendOk = await pollHealth('backend', config.sameOriginHealthUrl)
-      setComponent('backend', { state: backendOk ? 'online' : 'offline' })
-      if (!backendOk) console.warn('[WEBRTC][HEALTH] backend health failed', config.sameOriginHealthUrl)
+    if (healthEnabled.backend && config.aiHealthUrl !== 'runtime-only') {
+      const aiResult = await pollHealth('backend', 'aiServer', config.aiHealthUrl)
+      setComponent('backend', {
+        state: aiResult.ok ? 'online' : 'offline',
+        details: aiResult.ok ? 'AI /health JSON ok' : aiResult.error || 'AI health failed',
+      })
+      if (aiResult.ok) clearHealthFailure('backend')
+      else logHealthFailureOnce('backend', aiResult)
     } else {
       globalHealthControllers.backend?.abort()
+      clearHealthFailure('backend')
       setComponent('backend', { state: 'paused', details: 'health polling disabled' })
     }
 
-    if (healthEnabled.pc && config.pcHealthUrl !== 'runtime-only') {
-      const pcOk = await pollHealth('pc', config.pcHealthUrl)
-      setComponent('pc', { state: pcOk ? 'online' : componentStateFromLastSeen(lastSignals.pc || 0) })
-      if (!pcOk) console.warn('[WEBRTC][HEALTH] pc health failed', config.pcHealthUrl)
+    if (healthEnabled.pc) {
+      clearHealthFailure('pc')
+      const pcKind: HealthKind = config.pcKind === 'pc' ? 'pc' : 'webUi'
+      const pcUrl = config.pcKind === 'pc' ? config.pcHealthUrl : config.webUiUrl
+      if (pcUrl !== 'runtime-only') {
+        const pcResult = await pollHealth('pc', pcKind, pcUrl)
+        setComponent('pc', {
+          state: pcResult.ok ? 'online' : componentStateFromLastSeen(lastSignals.pc || 0),
+          details: pcResult.ok
+            ? (config.pcKind === 'pc' ? 'PC /health JSON ok' : 'Web UI HTML response ok')
+            : pcResult.error || 'PC/Web health failed',
+        })
+        if (pcResult.ok) clearHealthFailure('pc')
+        else logHealthFailureOnce('pc', pcResult)
+      } else {
+        setComponent('pc', { state: 'paused', details: 'no PC/Web URL configured' })
+      }
     } else {
       globalHealthControllers.pc?.abort()
+      clearHealthFailure('pc')
       setComponent('pc', { state: 'paused', details: 'health polling disabled' })
     }
 
@@ -734,7 +921,7 @@ export function mountWebrtcServerTab(root: HTMLElement) {
         : component === 'pc'
           ? cfg.pcHealthUrl
           : component === 'backend'
-            ? cfg.sameOriginHealthUrl
+            ? cfg.aiHealthUrl
             : (window.location.protocol === 'file:' ? 'runtime-only' : `${window.location.origin}/health + runtime state`)
       saveHealthToggle(component, url, enabled)
       console.log('[WEBRTC][HEALTH] toggle changed', { component, enabled, url })

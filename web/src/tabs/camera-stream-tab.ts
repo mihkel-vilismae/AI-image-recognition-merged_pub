@@ -1,14 +1,18 @@
 import './tab-style.css'
 import {
-  buildOwnDetectUrlFromHost,
+  buildDetectUrl,
+  buildHealthUrl,
   checkServerHealth,
+  DEFAULT_AI_BASE_URL,
   DEFAULT_PC_IP,
   DEFAULT_SIGNALING_PORT,
   extractIpv4HostFromText,
+  normalizeAiBaseUrl,
   scanSubnetForServer,
 } from './camera-stream-utils'
 import { emitAppEvent } from '../common'
 import { createUiLogger } from './webrtc-logger'
+import { getAiBaseUrlFromStorage, getSignalingUrlFromStorage, STORAGE_AI_BASE_URL_KEY, STORAGE_SIGNALING_URL_KEY } from './shared-config'
 
 type DetectBox = { name?: string; score?: number; xyxy?: number[] }
 
@@ -21,6 +25,10 @@ type SignalingMessage = {
   sdp?: string
   candidate?: unknown
 }
+
+
+const STORAGE_FRONT_DEVICE_ID_KEY = 'camera_stream.last_device_id.front'
+const STORAGE_BACK_DEVICE_ID_KEY = 'camera_stream.last_device_id.back'
 
 function setScanIndicator(el: HTMLSpanElement, state: 'idle' | 'searching' | 'found' | 'failed') {
   el.classList.remove('idle', 'searching', 'found', 'failed')
@@ -60,13 +68,23 @@ export function mountCameraStreamTab(root: HTMLElement) {
         <p>hello camera stream</p>
 
         <div id="streamPanel" class="streamPanel streamPanel--top">
-          <div class="videoWrap cameraPreviewWrap">
-            <video id="streamVideo" class="video" autoplay muted playsinline></video>
-            <canvas id="streamOverlay" class="videoOverlay"></canvas>
+          <div id="cameraControlsPanel" class="cameraControlsPanel controlsContainer">
+            <div class="cameraStreamTopRow">
+              <button id="btnStartLocalCamera" class="btn" type="button">Start local camera preview</button>
+              <button id="btnCameraFront" class="btn" type="button">Front camera</button>
+              <button id="btnCameraBack" class="btn" type="button">Back camera</button>
+              <span id="cameraFacingState" class="hint mono">Active camera: back</span>
+            </div>
+            <div class="cameraStreamTopRow">
+              <button id="btnRealtimeDetectStream" class="btn" type="button">Detect frames in real time</button>
+              <span id="realtimeResult" class="hint mono"></span>
+            </div>
           </div>
-          <div class="cameraStreamTopRow">
-            <button id="btnRealtimeDetectStream" class="btn" type="button">Detect frames in real time</button>
-            <span id="realtimeResult" class="hint mono"></span>
+          <div class="cameraVideoPanel videoContainer" id="cameraVideoPanel">
+            <div class="videoWrap cameraPreviewWrap">
+              <video id="streamVideo" class="video" autoplay muted playsinline></video>
+              <canvas id="streamOverlay" class="videoOverlay"></canvas>
+            </div>
           </div>
         </div>
 
@@ -89,14 +107,14 @@ export function mountCameraStreamTab(root: HTMLElement) {
             <span class="mono" id="cameraWindowVal">350ms</span>
           </label>
 
-          <label class="field" for="ownUrl"><span>AI server /detect URL</span></label>
-          <input id="ownUrl" class="mono" value="${buildOwnDetectUrlFromHost(DEFAULT_PC_IP)}" />
+          <label class="field" for="ownUrl"><span>AI server base URL</span></label>
+          <input id="ownUrl" class="mono" value="${getAiBaseUrlFromStorage()}" />
           <div id="cameraStreamStatus" class="hint mono">Idle. Health/scan controls only target the AI image recognition server endpoint.</div>
         </div>
 
         <div class="cameraStreamControls signalingSection">
           <label class="field" for="signalingTarget"><span>Signaling server (ip:port)</span></label>
-          <input id="signalingTarget" class="mono" value="ws://localhost:${DEFAULT_SIGNALING_PORT}" />
+          <input id="signalingTarget" class="mono" value="${getSignalingUrlFromStorage()}" />
 
           <div class="cameraStreamTopRow">
             <button id="btnDetectSignaling" class="btn" type="button">Detect signaling server</button>
@@ -147,9 +165,12 @@ export function mountCameraStreamTab(root: HTMLElement) {
   const connectSignalingResultEl = root.querySelector<HTMLSpanElement>('#connectSignalingResult')!
   const btnShowVideoStreamEl = root.querySelector<HTMLButtonElement>('#btnShowVideoStream')!
   const showVideoResultEl = root.querySelector<HTMLSpanElement>('#showVideoResult')!
-  const streamPanelEl = root.querySelector<HTMLDivElement>('#streamPanel')!
   const streamVideoEl = root.querySelector<HTMLVideoElement>('#streamVideo')!
   const streamOverlayEl = root.querySelector<HTMLCanvasElement>('#streamOverlay')!
+  const btnStartLocalCameraEl = root.querySelector<HTMLButtonElement>('#btnStartLocalCamera')!
+  const btnCameraFrontEl = root.querySelector<HTMLButtonElement>('#btnCameraFront')!
+  const btnCameraBackEl = root.querySelector<HTMLButtonElement>('#btnCameraBack')!
+  const cameraFacingStateEl = root.querySelector<HTMLSpanElement>('#cameraFacingState')!
   const btnRealtimeDetectStreamEl = root.querySelector<HTMLButtonElement>('#btnRealtimeDetectStream')!
   const realtimeResultEl = root.querySelector<HTMLSpanElement>('#realtimeResult')!
   const receiverLogEl = root.querySelector<HTMLPreElement>('#receiverLog')!
@@ -166,6 +187,8 @@ export function mountCameraStreamTab(root: HTMLElement) {
   let detectProbeTimeout: number | null = null
   let connectStatusTimer: number | null = null
   let stream: MediaStream | null = null
+  let localStream: MediaStream | null = null
+  let activeFacingMode: 'front' | 'back' = 'back'
   let detectTimer: number | null = null
   let peerConnection: RTCPeerConnection | null = null
   let remoteTrackSeen = false
@@ -174,7 +197,7 @@ export function mountCameraStreamTab(root: HTMLElement) {
   function emitWebrtcProgressEvent(name: 'SIGNALING_CONNECTING' | 'SIGNALING_CONNECTED' | 'SIGNALING_FAILED' | 'VIEWER_READY_SENT' | 'OFFER_RECEIVED' | 'REMOTE_TRACK_ATTACHED' | 'REMOTE_TRACK_FAILED', detail: Record<string, unknown> = {}) {
     logger.log('EVENT', 'emit webrtc progress', { name, detail })
     const prefixed = `WEBRTC_${name}` as const
-    emitAppEvent(prefixed, detail)
+    emitAppEvent(prefixed as Parameters<typeof emitAppEvent>[0], detail)
     if (name === 'VIEWER_READY_SENT') emitAppEvent('WEBRTC_VIEWER_READY', detail)
     if (name === 'REMOTE_TRACK_ATTACHED') emitAppEvent('WEBRTC_REMOTE_TRACK', detail)
     if (name === 'REMOTE_TRACK_FAILED') emitAppEvent('WEBRTC_REMOTE_TRACK_FAILED', detail)
@@ -188,6 +211,142 @@ export function mountCameraStreamTab(root: HTMLElement) {
   windowEl.addEventListener('input', () => {
     windowValEl.textContent = `${Number(windowEl.value).toFixed(0)}ms`
   })
+
+  function setFacingUiState() {
+    cameraFacingStateEl.textContent = `Active camera: ${activeFacingMode}`
+    btnCameraFrontEl.classList.toggle('btnActive', activeFacingMode === 'front')
+    btnCameraBackEl.classList.toggle('btnActive', activeFacingMode === 'back')
+  }
+
+  function setCameraButtonsBusy(busy: boolean) {
+    btnStartLocalCameraEl.disabled = busy
+    btnCameraFrontEl.disabled = busy
+    btnCameraBackEl.disabled = busy
+  }
+
+  function stopTracks(target: MediaStream | null) {
+    if (!target) return
+    for (const track of target.getTracks()) track.stop()
+  }
+
+  async function attachStreamToVideo(nextStream: MediaStream, source: 'local' | 'remote') {
+    logger.log('VIDEO', 'assigning stream to video', { source })
+    try {
+      streamVideoEl.srcObject = nextStream
+      streamVideoEl.muted = true
+      logger.log('VIDEO', 'stream assigned to video element', { source })
+    } catch (error) {
+      logger.error('VIDEO', 'failed assigning stream to video element', { source, error: String(error) })
+      throw error
+    }
+
+    try {
+      await streamVideoEl.play()
+      logger.log('VIDEO', 'video play() succeeded', { source })
+    } catch (error) {
+      logger.warn('VIDEO', 'video play() was rejected', { source, error: String(error) })
+    }
+  }
+
+  async function requestFacingModeStream(targetFacing: 'front' | 'back'): Promise<MediaStream> {
+    const facingMode = targetFacing === 'front' ? 'user' : 'environment'
+    try {
+      return await navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: facingMode } }, audio: false })
+    } catch (error) {
+      const errorName = String((error as { name?: string } | null)?.name || '')
+      if (errorName !== 'OverconstrainedError' && errorName !== 'NotFoundError') {
+        throw error
+      }
+      logger.warn('MEDIA', 'facingMode exact failed; falling back to device selection', { targetFacing, errorName })
+    }
+
+    const devices = await navigator.mediaDevices.enumerateDevices()
+    const videoInputs = devices.filter((device) => device.kind === 'videoinput')
+    const labelMatcher = targetFacing === 'front' ? 'front' : 'back'
+    const byLabel = videoInputs.find((device) => (device.label || '').toLowerCase().includes(labelMatcher))
+    const storageKey = targetFacing === 'front' ? STORAGE_FRONT_DEVICE_ID_KEY : STORAGE_BACK_DEVICE_ID_KEY
+    const storedDeviceId = localStorage.getItem(storageKey) || ''
+
+    const selected = byLabel
+      ?? (storedDeviceId ? videoInputs.find((device) => device.deviceId === storedDeviceId) : undefined)
+      ?? videoInputs[0]
+
+    if (selected?.deviceId) {
+      return navigator.mediaDevices.getUserMedia({
+        video: { deviceId: { exact: selected.deviceId } },
+        audio: false,
+      })
+    }
+
+    if (storedDeviceId) {
+      return navigator.mediaDevices.getUserMedia({
+        video: { deviceId: { exact: storedDeviceId } },
+        audio: false,
+      })
+    }
+
+    return navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+  }
+
+  async function restartLocalPreview(targetFacing: 'front' | 'back'): Promise<void> {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      showVideoResultEl.textContent = 'Camera APIs are not available in this browser/runtime.'
+      logger.error('MEDIA', 'getUserMedia unavailable')
+      return
+    }
+
+    setCameraButtonsBusy(true)
+    const previousFacing = activeFacingMode
+    const previousStream = localStream
+    stopTracks(localStream)
+    localStream = null
+    stream = null
+    streamVideoEl.srcObject = null
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
+
+    try {
+      logger.log('MEDIA', 'requesting media restart', { targetFacing })
+      const nextStream = await requestFacingModeStream(targetFacing)
+      const videoTrack = nextStream.getVideoTracks()[0]
+      const usedDeviceId = videoTrack?.getSettings?.().deviceId || videoTrack?.id || ''
+      if (usedDeviceId) {
+        const key = targetFacing === 'front' ? STORAGE_FRONT_DEVICE_ID_KEY : STORAGE_BACK_DEVICE_ID_KEY
+        localStorage.setItem(key, usedDeviceId)
+      }
+
+      localStream = nextStream
+      stream = nextStream
+      activeFacingMode = targetFacing
+      setFacingUiState()
+      await attachStreamToVideo(nextStream, 'local')
+      showVideoResultEl.textContent = `Local ${targetFacing} camera preview is active.`
+
+      const sender = peerConnection?.getSenders?.().find((item) => item.track?.kind === 'video')
+      const newVideoTrack = nextStream.getVideoTracks()[0]
+      if (sender && newVideoTrack && typeof sender.replaceTrack === 'function') {
+        try {
+          await sender.replaceTrack(newVideoTrack)
+          logger.log('WEBRTC', 'replaceTrack succeeded after camera switch', { targetFacing })
+        } catch (error) {
+          logger.warn('WEBRTC', 'replaceTrack failed after camera switch', { error: String(error) })
+        }
+      }
+
+      stopTracks(previousStream)
+    } catch (error) {
+      logger.error('MEDIA', 'failed to restart local camera', { targetFacing, error: String(error) })
+      showVideoResultEl.textContent = `Failed to start ${targetFacing} camera: ${String(error)}`
+      activeFacingMode = previousFacing
+      setFacingUiState()
+      localStream = previousStream
+      stream = previousStream
+      if (previousStream) {
+        await attachStreamToVideo(previousStream, 'local')
+      }
+    } finally {
+      setCameraButtonsBusy(false)
+    }
+  }
 
   function stopRealtimeDetect() {
     if (detectTimer != null) {
@@ -244,7 +403,7 @@ export function mountCameraStreamTab(root: HTMLElement) {
     const fd = new FormData()
     fd.append('file', blob, 'stream-frame.jpg')
 
-    const detectUrl = `${ownUrlEl.value.trim().split('?')[0]}?conf=${encodeURIComponent(conf)}`
+    const detectUrl = buildDetectUrl(ownUrlEl.value, conf)
     logger.log('DETECT', 'invoking detect', { url: detectUrl })
     const response = await fetch(detectUrl, {
       method: 'POST',
@@ -297,9 +456,12 @@ export function mountCameraStreamTab(root: HTMLElement) {
     }
 
     pc.ontrack = (event) => {
+      logger.log('WEBRTC', 'ontrack fired', { streams: event.streams.length })
       stream = event.streams[0] ?? null
       if (stream) {
-        streamVideoEl.srcObject = stream
+        const tracks = stream.getTracks().map((track) => ({ kind: track.kind, id: track.id }))
+        logger.log('WEBRTC', 'remote stream tracks', { tracks })
+        void attachStreamToVideo(stream, 'remote')
         showVideoResultEl.textContent = 'Remote video stream received from the original source and displayed.'
       }
       logger.log('WEBRTC', 'remote track attached', { hasStream: Boolean(stream) })
@@ -416,9 +578,11 @@ export function mountCameraStreamTab(root: HTMLElement) {
     }
 
     if (stream && streamVideoEl.srcObject !== stream) {
-      for (const track of stream.getTracks()) track.stop()
+      stopTracks(stream)
       stream = null
     }
+    stopTracks(localStream)
+    localStream = null
     streamVideoEl.srcObject = null
 
     btnConnectSignalingEl.textContent = 'Connect to signaling server'
@@ -430,21 +594,27 @@ export function mountCameraStreamTab(root: HTMLElement) {
   }
 
   btnCheckEl.addEventListener('click', async () => {
-    const host = extractIpv4HostFromText(ownUrlEl.value) ?? DEFAULT_PC_IP
+    const aiBaseUrl = normalizeAiBaseUrl(ownUrlEl.value)
+    ownUrlEl.value = aiBaseUrl
+    const host = extractIpv4HostFromText(aiBaseUrl) ?? DEFAULT_PC_IP
     setScanIndicator(scanIndicatorEl, 'searching')
-    statusEl.textContent = 'Checking selected AI image recognition server /health endpoint. Verifying server reachability and response payload…'
+    statusEl.textContent = `Checking selected AI image recognition server health endpoint at ${buildHealthUrl(aiBaseUrl)}…`
     const health = await checkServerHealth(host)
 
     if (health.ok) {
-      ownUrlEl.value = buildOwnDetectUrlFromHost(host)
       statusEl.textContent = health.verified
-        ? 'AI image recognition server health check passed. The selected host is responding with a valid health payload.'
+        ? 'AI image recognition server health check passed. The selected host is responding with a valid JSON health payload.'
         : 'AI image recognition server is reachable, but health verification is CORS-limited (opaque/no-cors response).'
       setScanIndicator(scanIndicatorEl, 'found')
+      logger.log('HEALTH', 'health check passed', { aiBaseUrl, healthUrl: buildHealthUrl(aiBaseUrl), reason: health.reason })
       return
     }
 
-    statusEl.textContent = 'AI image recognition server health check failed. Could not verify a healthy server at the selected host.'
+    const reason = health.reason === 'non_json_response'
+      ? 'Health endpoint did not return JSON; treated as unhealthy.'
+      : `Health check failed (${health.reason}).`
+    statusEl.textContent = `AI image recognition server health check failed. ${reason}`
+    logger.warn('HEALTH', 'health check failed', { aiBaseUrl, healthUrl: buildHealthUrl(aiBaseUrl), reason: health.reason })
     setScanIndicator(scanIndicatorEl, 'failed')
   })
 
@@ -460,7 +630,7 @@ export function mountCameraStreamTab(root: HTMLElement) {
       return
     }
 
-    ownUrlEl.value = buildOwnDetectUrlFromHost(found.host)
+    ownUrlEl.value = `http://${found.host}:5175`
     statusEl.textContent = found.health.verified
       ? 'AI image recognition server found on the local network and health endpoint verified successfully.'
       : 'Potential AI image recognition server found on the local network, but health verification is CORS-limited.'
@@ -572,6 +742,28 @@ export function mountCameraStreamTab(root: HTMLElement) {
     })
   })
 
+  btnStartLocalCameraEl.addEventListener('click', () => {
+    void restartLocalPreview(activeFacingMode)
+  })
+
+  btnCameraFrontEl.addEventListener('click', () => {
+    void restartLocalPreview('front')
+  })
+
+  btnCameraBackEl.addEventListener('click', () => {
+    void restartLocalPreview('back')
+  })
+
+  ownUrlEl.addEventListener('change', () => {
+    ownUrlEl.value = normalizeAiBaseUrl(ownUrlEl.value)
+    localStorage.setItem(STORAGE_AI_BASE_URL_KEY, ownUrlEl.value)
+  })
+
+  signalingTargetEl.addEventListener('change', () => {
+    signalingTargetEl.value = signalingTargetEl.value.trim()
+    if (signalingTargetEl.value) localStorage.setItem(STORAGE_SIGNALING_URL_KEY, signalingTargetEl.value)
+  })
+
   btnShowVideoStreamEl.addEventListener('click', () => {
     void showVideoStream()
   })
@@ -602,5 +794,6 @@ export function mountCameraStreamTab(root: HTMLElement) {
     }, 1000)
   })
 
+  setFacingUiState()
   setScanIndicator(scanIndicatorEl, 'idle')
 }

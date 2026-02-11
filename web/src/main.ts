@@ -5,6 +5,7 @@ import { mountCameraStreamTab } from './tabs/camera-stream-tab'
 import { mountImagesTab } from './tabs/images-tab'
 import { mountVideosTab } from './tabs/videos-tab'
 import { mountWebrtcServerTab } from './tabs/webrtc-server-tab'
+import { mountVidconMonitorTab } from './tabs/vidcon-monitor-tab'
 
 function renderShell(root: HTMLElement) {
   root.innerHTML = `
@@ -14,6 +15,7 @@ function renderShell(root: HTMLElement) {
       <a class="tabLink" data-route="videos" href="#/videos">Videos</a>
       <a class="tabLink" data-route="camera-stream" href="#/camera-stream">Camera Stream</a>
       <a class="tabLink" data-route="webrtc-server" href="#/webrtc-server">WebRTC Server</a>
+      <a class="tabLink" data-route="vidcon-monitor" href="#/vidcon-monitor">VidConMonitor</a>
     </nav>
     <section id="tabView"></section>
   </div>
@@ -48,7 +50,12 @@ function mountRoute(root: HTMLElement) {
     return
   }
 
-  mountWebrtcServerTab(tabView)
+  if (route === 'webrtc-server') {
+    mountWebrtcServerTab(tabView)
+    return
+  }
+
+  mountVidconMonitorTab(tabView)
 }
 
 export function initSinglePageApp(root: HTMLElement) {

@@ -300,7 +300,14 @@ export function initCameraApp(root: HTMLElement, opts: CameraAppOptions = {}) {
 
   // Event listeners
   startStreamEl.addEventListener('click', async () => {
-    if (streamState !== 'stopped') return
+    if (streamState === 'started') return
+    if (streamState === 'paused' && mediaStream) {
+      await videoEl.play()
+      streamState = 'started'
+      setStatus('ok', 'Streaming')
+      updateStreamButtons()
+      return
+    }
     try {
       // Acquire media stream from camera
       const constraints = { video: true, audio: false }
