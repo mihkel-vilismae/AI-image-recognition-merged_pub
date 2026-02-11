@@ -12,6 +12,7 @@ import {
 } from './camera-stream-utils'
 import { emitAppEvent } from '../common'
 import { createUiLogger } from './webrtc-logger'
+import { getAiBaseUrlFromStorage, getSignalingUrlFromStorage, STORAGE_AI_BASE_URL_KEY, STORAGE_RELAY_KEY } from './shared-config'
 
 type DetectBox = { name?: string; score?: number; xyxy?: number[] }
 
@@ -103,13 +104,13 @@ export function mountCameraStreamTab(root: HTMLElement) {
           </label>
 
           <label class="field" for="ownUrl"><span>AI server base URL</span></label>
-          <input id="ownUrl" class="mono" value="${DEFAULT_AI_BASE_URL}" />
+          <input id="ownUrl" class="mono" value="${getAiBaseUrlFromStorage()}" />
           <div id="cameraStreamStatus" class="hint mono">Idle. Health/scan controls only target the AI image recognition server endpoint.</div>
         </div>
 
         <div class="cameraStreamControls signalingSection">
           <label class="field" for="signalingTarget"><span>Signaling server (ip:port)</span></label>
-          <input id="signalingTarget" class="mono" value="ws://localhost:${DEFAULT_SIGNALING_PORT}" />
+          <input id="signalingTarget" class="mono" value="${getSignalingUrlFromStorage()}" />
 
           <div class="cameraStreamTopRow">
             <button id="btnDetectSignaling" class="btn" type="button">Detect signaling server</button>
@@ -687,6 +688,12 @@ export function mountCameraStreamTab(root: HTMLElement) {
 
   ownUrlEl.addEventListener('change', () => {
     ownUrlEl.value = normalizeAiBaseUrl(ownUrlEl.value)
+    localStorage.setItem(STORAGE_AI_BASE_URL_KEY, ownUrlEl.value)
+  })
+
+  signalingTargetEl.addEventListener('change', () => {
+    signalingTargetEl.value = signalingTargetEl.value.trim()
+    if (signalingTargetEl.value) localStorage.setItem(STORAGE_RELAY_KEY, signalingTargetEl.value)
   })
 
   btnShowVideoStreamEl.addEventListener('click', () => {
