@@ -64,7 +64,7 @@ describe('single page tabs', () => {
     initSinglePageApp(root)
 
     const tabRoutes = Array.from(root.querySelectorAll<HTMLAnchorElement>('.tabLink')).map((el) => el.dataset.route)
-    expect(tabRoutes).toEqual(['images', 'videos', 'camera-stream', 'webrtc-server'])
+    expect(tabRoutes).toEqual(['images', 'videos', 'camera-stream', 'webrtc-server', 'vidcon-monitor'])
 
     window.location.hash = '#/webrtc-server'
     window.dispatchEvent(new HashChangeEvent('hashchange'))
@@ -146,6 +146,19 @@ describe('single page tabs', () => {
     root.querySelector<HTMLButtonElement>('[data-action="open-phone"]')?.click()
     const html = root.querySelector<HTMLElement>('#tabView')?.dataset.phonePublisherHtml || ''
     expect(html).toContain('ws://1.2.3.4:8765')
+  })
+
+
+  it('renders VidConMonitor tab and marks it active', () => {
+    const root = document.createElement('div')
+    root.id = 'app'
+    document.body.appendChild(root)
+
+    window.location.hash = '#/vidcon-monitor'
+    initSinglePageApp(root)
+
+    expect(root.querySelector('h1')?.textContent).toContain('VidConMonitor')
+    expect(root.querySelector<HTMLAnchorElement>('[data-route="vidcon-monitor"]')?.dataset.active).toBe('true')
   })
 
   it('marks selected tab active', () => {

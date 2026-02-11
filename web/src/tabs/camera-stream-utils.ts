@@ -1,6 +1,29 @@
 export const DEFAULT_PC_IP = 'localhost'
 export const DEFAULT_SERVER_PORT = 5175
 export const DEFAULT_SIGNALING_PORT = 8765
+export const DEFAULT_AI_BASE_URL = `http://${DEFAULT_PC_IP}:${DEFAULT_SERVER_PORT}`
+
+export function normalizeAiBaseUrl(input: string): string {
+  const trimmed = typeof input === 'string' ? input.trim() : ''
+  if (!trimmed) return DEFAULT_AI_BASE_URL
+
+  try {
+    const parsed = new URL(trimmed.includes('://') ? trimmed : `http://${trimmed}`)
+    const protocol = parsed.protocol === 'https:' ? 'https:' : 'http:'
+    return `${protocol}//${parsed.host}`
+  } catch {
+    return DEFAULT_AI_BASE_URL
+  }
+}
+
+export function buildDetectUrl(aiBaseUrl: string, conf = 0.25): string {
+  const base = normalizeAiBaseUrl(aiBaseUrl)
+  return `${base}/api/detect?conf=${conf}`
+}
+
+export function buildHealthUrl(aiBaseUrl: string): string {
+  return `${normalizeAiBaseUrl(aiBaseUrl)}/health`
+}
 
 export function buildOwnDetectUrlFromHost(host: string, conf = 0.25): string {
   const safeHost = typeof host === 'string' ? host.trim() : ''
@@ -71,35 +94,41 @@ export function hasVideoStreamSignal(message: unknown): boolean {
   return false
 }
 
-export async function checkServerHealth(host: string, timeoutMs = 2500): Promise<{ ok: boolean; verified: boolean; reason: string }> {
+export async function checkServerHealth(aiBaseUrl: string, timeoutMs = 2500): Promise<{ ok: boolean; verified: boolean; reason: string; healthUrl: string }> {
+  const baseUrl = normalizeAiBaseUrl(aiBaseUrl)
+  const healthUrl = buildHealthUrl(baseUrl)
   const corsController = new AbortController()
   const corsTimer = window.setTimeout(() => corsController.abort(), timeoutMs)
 
   try {
-    const res = await fetch(`http://${host}:${DEFAULT_SERVER_PORT}/health`, {
+    const res = await fetch(healthUrl, {
       method: 'GET',
       cache: 'no-store',
       signal: corsController.signal,
     })
-    if (!res.ok) return { ok: false, verified: false, reason: `http_${res.status}` }
+    if (!res.ok) return { ok: false, verified: false, reason: `http_${res.status}`, healthUrl }
+    const contentType = res.headers.get('content-type') || ''
+    if (!contentType.toLowerCase().includes('application/json')) {
+      return { ok: false, verified: false, reason: 'non_json_response', healthUrl }
+    }
     const payload = await res.json().catch(() => null)
-    if (payload && payload.ok === true) return { ok: true, verified: true, reason: 'health_ok' }
-    return { ok: false, verified: false, reason: 'bad_payload' }
+    if (payload && payload.ok === true) return { ok: true, verified: true, reason: 'health_ok', healthUrl }
+    return { ok: false, verified: false, reason: 'bad_payload', healthUrl }
   } catch (err) {
-    if (!isLikelyCorsFetchError(err)) return { ok: false, verified: false, reason: 'network_error' }
+    if (!isLikelyCorsFetchError(err)) return { ok: false, verified: false, reason: 'network_error', healthUrl }
 
     const noCorsController = new AbortController()
     const noCorsTimer = window.setTimeout(() => noCorsController.abort(), timeoutMs)
     try {
-      await fetch(`http://${host}:${DEFAULT_SERVER_PORT}/health`, {
+      await fetch(healthUrl, {
         method: 'GET',
         mode: 'no-cors',
         cache: 'no-store',
         signal: noCorsController.signal,
       })
-      return { ok: true, verified: false, reason: 'cors_opaque_reachable' }
+      return { ok: true, verified: false, reason: 'cors_opaque_reachable', healthUrl }
     } catch {
-      return { ok: false, verified: false, reason: 'cors_blocked_or_unreachable' }
+      return { ok: false, verified: false, reason: 'cors_blocked_or_unreachable', healthUrl }
     } finally {
       window.clearTimeout(noCorsTimer)
     }
@@ -112,13 +141,13 @@ export async function scanSubnetForServer(seedHost: string): Promise<{ host: str
   const candidates = buildSubnetIpv4Candidates(seedHost)
   if (candidates.length === 0) return null
 
-  const seedResult = await checkServerHealth(candidates[0], 2500)
+  const seedResult = await checkServerHealth(`http://${candidates[0]}:${DEFAULT_SERVER_PORT}`, 2500)
   if (seedResult.ok) return { host: candidates[0], health: seedResult }
 
   const chunkSize = 12
   for (let i = 1; i < candidates.length; i += chunkSize) {
     const chunk = candidates.slice(i, i + chunkSize)
-    const checks = chunk.map(async (host) => ({ host, health: await checkServerHealth(host, 1200) }))
+    const checks = chunk.map(async (host) => ({ host, health: await checkServerHealth(`http://${host}:${DEFAULT_SERVER_PORT}`, 1200) }))
     const results = await Promise.all(checks)
     const found = results.find((r) => r.health.ok)
     if (found) return found

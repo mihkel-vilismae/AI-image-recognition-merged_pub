@@ -11,7 +11,7 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, File, Query, UploadFile
+from fastapi import FastAPI, File, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import numpy as np
@@ -379,14 +379,30 @@ def _detect_video_samples(video_path: str, conf: float, stride: int, max_frames:
 def create_app() -> FastAPI:
     app = FastAPI(title="AI Image Recognition", version="0.1.0")
 
-    # Vite dev server origin; expand for production if needed.
+    # DEV CORS configuration for browser-based health/debug flows.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173", "http://localhost:5174"],
-        allow_credentials=True,
+        allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5174"],
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def dev_request_logging(request: Request, call_next):
+        start = time.perf_counter()
+        response = await call_next(request)
+        duration_ms = (time.perf_counter() - start) * 1000
+        logger.info(
+            "request method=%s path=%s status=%s duration_ms=%.1f origin=%s referer=%s",
+            request.method,
+            request.url.path,
+            response.status_code,
+            duration_ms,
+            request.headers.get("origin", ""),
+            request.headers.get("referer", ""),
+        )
+        return response
 
     @app.on_event("startup")
     async def log_network_info() -> None:
@@ -394,12 +410,19 @@ def create_app() -> FastAPI:
         _log_network_access_urls(port)
 
     @app.get("/health")
-    def health() -> Dict[str, str | bool]:
+    def health(request: Request) -> Dict[str, str | bool]:
+        logger.info(
+            "health_hit method=%s path=%s client=%s user_agent=%s origin=%s",
+            request.method,
+            request.url.path,
+            request.client.host if request.client else "unknown",
+            request.headers.get("user-agent", ""),
+            request.headers.get("origin", ""),
+        )
         return {
             "ok": True,
-            "service": "ai-image-recognition",
-            "time": datetime.utcnow().isoformat() + "Z",
-            "version": "1.0",
+            "service": "ai-server",
+            "ts": datetime.utcnow().isoformat() + "Z",
         }
 
     @app.get("/webrtc/network")

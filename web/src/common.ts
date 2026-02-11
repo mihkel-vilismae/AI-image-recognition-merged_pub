@@ -1,4 +1,4 @@
-export type AppRoute = 'images' | 'videos' | 'camera-stream' | 'webrtc-server'
+export type AppRoute = 'images' | 'videos' | 'camera-stream' | 'webrtc-server' | 'vidcon-monitor'
 
 const DEFAULT_ROUTE: AppRoute = 'images'
 
@@ -13,6 +13,7 @@ export function parseRouteFromHash(hash: string): AppRoute {
   if (route === 'videos') return 'videos'
   if (route === 'camera-stream') return 'camera-stream'
   if (route === 'webrtc-server') return 'webrtc-server'
+  if (route === 'vidcon-monitor') return 'vidcon-monitor'
   return DEFAULT_ROUTE
 }
 
