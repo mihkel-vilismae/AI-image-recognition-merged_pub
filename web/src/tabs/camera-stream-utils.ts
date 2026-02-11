@@ -1,6 +1,29 @@
 export const DEFAULT_PC_IP = 'localhost'
 export const DEFAULT_SERVER_PORT = 5175
 export const DEFAULT_SIGNALING_PORT = 8765
+export const DEFAULT_AI_BASE_URL = `http://${DEFAULT_PC_IP}:${DEFAULT_SERVER_PORT}`
+
+export function normalizeAiBaseUrl(input: string): string {
+  const trimmed = typeof input === 'string' ? input.trim() : ''
+  if (!trimmed) return DEFAULT_AI_BASE_URL
+
+  try {
+    const parsed = new URL(trimmed.includes('://') ? trimmed : `http://${trimmed}`)
+    const protocol = parsed.protocol === 'https:' ? 'https:' : 'http:'
+    return `${protocol}//${parsed.host}`
+  } catch {
+    return DEFAULT_AI_BASE_URL
+  }
+}
+
+export function buildDetectUrl(aiBaseUrl: string, conf = 0.25): string {
+  const base = normalizeAiBaseUrl(aiBaseUrl)
+  return `${base}/api/detect?conf=${conf}`
+}
+
+export function buildHealthUrl(aiBaseUrl: string): string {
+  return `${normalizeAiBaseUrl(aiBaseUrl)}/health`
+}
 
 export function buildOwnDetectUrlFromHost(host: string, conf = 0.25): string {
   const safeHost = typeof host === 'string' ? host.trim() : ''
@@ -72,16 +95,22 @@ export function hasVideoStreamSignal(message: unknown): boolean {
 }
 
 export async function checkServerHealth(host: string, timeoutMs = 2500): Promise<{ ok: boolean; verified: boolean; reason: string }> {
+  const baseUrl = normalizeAiBaseUrl(`http://${host}:${DEFAULT_SERVER_PORT}`)
+  const healthUrl = buildHealthUrl(baseUrl)
   const corsController = new AbortController()
   const corsTimer = window.setTimeout(() => corsController.abort(), timeoutMs)
 
   try {
-    const res = await fetch(`http://${host}:${DEFAULT_SERVER_PORT}/health`, {
+    const res = await fetch(healthUrl, {
       method: 'GET',
       cache: 'no-store',
       signal: corsController.signal,
     })
     if (!res.ok) return { ok: false, verified: false, reason: `http_${res.status}` }
+    const contentType = res.headers.get('content-type') || ''
+    if (!contentType.toLowerCase().includes('application/json')) {
+      return { ok: false, verified: false, reason: 'non_json_response' }
+    }
     const payload = await res.json().catch(() => null)
     if (payload && payload.ok === true) return { ok: true, verified: true, reason: 'health_ok' }
     return { ok: false, verified: false, reason: 'bad_payload' }
@@ -91,7 +120,7 @@ export async function checkServerHealth(host: string, timeoutMs = 2500): Promise
     const noCorsController = new AbortController()
     const noCorsTimer = window.setTimeout(() => noCorsController.abort(), timeoutMs)
     try {
-      await fetch(`http://${host}:${DEFAULT_SERVER_PORT}/health`, {
+      await fetch(healthUrl, {
         method: 'GET',
         mode: 'no-cors',
         cache: 'no-store',
