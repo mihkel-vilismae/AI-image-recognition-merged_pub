@@ -350,3 +350,51 @@
     grid-template-columns: 1fr;
   }
 }
+
+
+.vidconTopRight {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.vidconActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.vidconIconBtn {
+  border: 1px solid rgba(152, 167, 194, 0.45);
+  background: rgba(0, 0, 0, 0.18);
+  color: inherit;
+  border-radius: 6px;
+  padding: 1px 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.vidconIconBtn:hover {
+  border-color: rgba(255, 235, 59, 0.8);
+}
+
+.vidconHistoryPanel {
+  margin-top: 8px;
+  border-top: 1px dashed rgba(152, 167, 194, 0.35);
+  padding-top: 6px;
+}
+
+.vidconHistoryTitle {
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.vidconHistoryBody {
+  margin: 0;
+  max-height: 140px;
+  overflow: auto;
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+}

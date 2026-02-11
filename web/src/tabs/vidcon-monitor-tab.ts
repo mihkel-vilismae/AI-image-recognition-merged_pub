@@ -25,6 +25,10 @@ function fmt(ts: number | null): string {
   return d.toLocaleTimeString()
 }
 
+function fmtHistory(ts: number): string {
+  return new Date(ts).toLocaleTimeString()
+}
+
 export function mountVidconMonitorTab(root: HTMLElement) {
   root.innerHTML = `
   <div class="page">
@@ -45,6 +49,21 @@ export function mountVidconMonitorTab(root: HTMLElement) {
   const hiddenVideo = root.querySelector<HTMLVideoElement>('#vidconHiddenVideo')!
 
   const cardById = new Map<MonitorBlockId, HTMLElement>()
+  const historyOpenById: Record<MonitorBlockId, boolean> = {
+    signalingRelayReachable: false,
+    phonePublisherPageLoaded: false,
+    phoneCameraActive: false,
+    webrtcOfferAnswerCompleted: false,
+    webrtcPeerConnectionConnected: false,
+    remoteVideoTrackReceived: false,
+    videoElementRendering: false,
+    aiServerHealthy: false,
+  }
+
+  const engine = createVidconMonitorEngine({
+    onUpdate: render,
+    videoEl: hiddenVideo,
+  })
 
   for (const id of BLOCK_ORDER) {
     const block = document.createElement('article')
@@ -53,13 +72,33 @@ export function mountVidconMonitorTab(root: HTMLElement) {
     block.innerHTML = `
       <div class="vidconTitleRow">
         <h2 class="vidconTitle"></h2>
-        <span class="vidconDepWarn" aria-label="dependency warning">⚠</span>
+        <div class="vidconTopRight">
+          <span class="vidconDepWarn" aria-label="dependency warning">⚠</span>
+          <div class="vidconActions">
+            <button class="vidconIconBtn" type="button" data-action="toggle-history" title="Toggle history" aria-label="Toggle history">🕘</button>
+            <button class="vidconIconBtn" type="button" data-action="clear-history" title="Clear history" aria-label="Clear history">🧹</button>
+          </div>
+        </div>
       </div>
       <div class="vidconState mono">NOT_STARTED</div>
       <div class="vidconDetail"></div>
       <div class="vidconMeta mono"></div>
       <div class="vidconDeps mono"></div>
+      <div class="vidconHistoryPanel hidden" data-history-panel>
+        <div class="vidconHistoryTitle mono">History</div>
+        <pre class="vidconHistoryBody mono" data-history-body></pre>
+      </div>
     `
+
+    block.querySelector<HTMLButtonElement>('[data-action="toggle-history"]')!.addEventListener('click', () => {
+      historyOpenById[id] = !historyOpenById[id]
+      render(engine.getSnapshot())
+    })
+
+    block.querySelector<HTMLButtonElement>('[data-action="clear-history"]')!.addEventListener('click', () => {
+      engine.clearHistory(id)
+    })
+
     grid.appendChild(block)
     cardById.set(id, block)
   }
@@ -79,13 +118,16 @@ export function mountVidconMonitorTab(root: HTMLElement) {
 
       const hasDependencyIssue = block.dependencies.some((dep) => snapshot[dep].state !== 'OK')
       card.querySelector('.vidconDepWarn')!.classList.toggle('hidden', !hasDependencyIssue)
+
+      const historyPanel = card.querySelector<HTMLElement>('[data-history-panel]')!
+      historyPanel.classList.toggle('hidden', !historyOpenById[id])
+      const historyBody = card.querySelector<HTMLElement>('[data-history-body]')!
+      const history = [...block.history].reverse()
+      historyBody.textContent = history.length
+        ? history.map((entry) => `${fmtHistory(entry.ts)} ${entry.level.padEnd(5, ' ')} ${entry.message}`).join('\n')
+        : 'No history yet.'
     }
   }
-
-  const engine = createVidconMonitorEngine({
-    onUpdate: render,
-    videoEl: hiddenVideo,
-  })
 
   engine.start()
 

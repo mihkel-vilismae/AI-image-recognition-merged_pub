@@ -4,8 +4,16 @@ import { getAiBaseUrlFromStorage, getSignalingUrlFromStorage } from './shared-co
 export const VIDCON_POLL_MS = 1500
 const HEARTBEAT_MAX_AGE_MS = 5000
 const HEALTH_TIMEOUT_MS = 1200
+export const MAX_HISTORY_ENTRIES = 200
 
 export type MonitorState = 'NOT_STARTED' | 'CHECKING' | 'OK' | 'FAIL' | 'DISABLED'
+export type HistoryLevel = 'INFO' | 'OK' | 'FAIL' | 'DEBUG'
+
+export type HistoryEntry = {
+  ts: number
+  level: HistoryLevel
+  message: string
+}
 
 export type MonitorBlockId =
   | 'signalingRelayReachable'
@@ -26,12 +34,23 @@ export type MonitorBlock = {
   lastCheckedAt: number | null
   lastOkAt: number | null
   lastError: string | null
+  history: HistoryEntry[]
 }
 
 type Snapshot = Record<MonitorBlockId, MonitorBlock>
 
 function makeBlock(id: MonitorBlockId, title: string, dependencies: MonitorBlockId[] = []): MonitorBlock {
-  return { id, title, dependencies, state: 'NOT_STARTED', detail: 'not started', lastCheckedAt: null, lastOkAt: null, lastError: null }
+  return {
+    id,
+    title,
+    dependencies,
+    state: 'NOT_STARTED',
+    detail: 'not started',
+    lastCheckedAt: null,
+    lastOkAt: null,
+    lastError: null,
+    history: [],
+  }
 }
 
 function initialSnapshot(): Snapshot {
@@ -54,6 +73,11 @@ type EngineOptions = {
   videoEl: HTMLVideoElement
 }
 
+function compactError(error: unknown): string {
+  const raw = String(error)
+  return raw.replace(/\s+/g, ' ').slice(0, 180)
+}
+
 export function createVidconMonitorEngine({ onUpdate, videoEl }: EngineOptions) {
   const snapshot = initialSnapshot()
   let timer: number | null = null
@@ -67,6 +91,14 @@ export function createVidconMonitorEngine({ onUpdate, videoEl }: EngineOptions) 
   let remoteTrackLive = false
   let renderSampleTime = 0
   let lastTransitionState: Partial<Record<MonitorBlockId, MonitorState>> = {}
+
+  function pushHistory(blockId: MonitorBlockId, level: HistoryLevel, message: string) {
+    const block = snapshot[blockId]
+    block.history.push({ ts: Date.now(), level, message: message.slice(0, 220) })
+    if (block.history.length > MAX_HISTORY_ENTRIES) {
+      block.history.splice(0, block.history.length - MAX_HISTORY_ENTRIES)
+    }
+  }
 
   function notify() {
     onUpdate(structuredClone(snapshot))
@@ -85,6 +117,7 @@ export function createVidconMonitorEngine({ onUpdate, videoEl }: EngineOptions) 
       lastTransitionState[blockId] = next.state
       if (prev !== next.state) {
         console.info(`[VIDCON] ${block.title} ${prev} -> ${next.state}`)
+        pushHistory(blockId, next.state === 'FAIL' ? 'FAIL' : 'INFO', `state ${prev} -> ${next.state}`)
       }
     }
   }
@@ -102,12 +135,18 @@ export function createVidconMonitorEngine({ onUpdate, videoEl }: EngineOptions) 
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return
 
     wsError = null
+    pushHistory('signalingRelayReachable', 'INFO', `WS connect attempt to ${signalingUrl}`)
     try {
       ws = new WebSocket(signalingUrl)
     } catch (error) {
-      wsError = String(error)
+      wsError = compactError(error)
+      pushHistory('signalingRelayReachable', 'FAIL', `WS constructor failed: ${wsError}`)
       return
     }
+
+    ws.addEventListener('open', () => {
+      pushHistory('signalingRelayReachable', 'OK', 'WS open')
+    })
 
     ws.addEventListener('message', (event) => {
       if (typeof event.data !== 'string') return
@@ -121,10 +160,12 @@ export function createVidconMonitorEngine({ onUpdate, videoEl }: EngineOptions) 
       if (payload.type === 'publisher_heartbeat') {
         lastHeartbeatAt = Date.now()
         heartbeatPayload = payload
+        pushHistory('phonePublisherPageLoaded', 'OK', 'heartbeat received from publisher')
       }
 
       if (payload.type === 'offer' && typeof payload.sdp === 'string') {
         offerSeen = true
+        pushHistory('webrtcOfferAnswerCompleted', 'INFO', 'offer received')
         void handleOffer(payload.sdp)
       }
 
@@ -135,10 +176,12 @@ export function createVidconMonitorEngine({ onUpdate, videoEl }: EngineOptions) 
 
     ws.addEventListener('error', () => {
       wsError = 'WS error'
+      pushHistory('signalingRelayReachable', 'FAIL', wsError)
     })
 
     ws.addEventListener('close', () => {
       wsError = 'WS closed'
+      pushHistory('signalingRelayReachable', 'FAIL', wsError)
     })
   }
 
@@ -150,18 +193,42 @@ export function createVidconMonitorEngine({ onUpdate, videoEl }: EngineOptions) 
   function ensurePc() {
     if (pc) return pc
     pc = new RTCPeerConnection()
+    pushHistory('webrtcPeerConnectionConnected', 'INFO', 'peer connection created')
+
     pc.onicecandidate = (event) => {
       if (!event.candidate) return
       send({ type: 'candidate', candidate: event.candidate })
     }
+
+    pc.addEventListener('connectionstatechange', () => {
+      pushHistory('webrtcPeerConnectionConnected', 'INFO', `pc state ${pc?.connectionState || 'unknown'}`)
+    })
+
+    pc.addEventListener('iceconnectionstatechange', () => {
+      pushHistory('webrtcPeerConnectionConnected', 'INFO', `ice state ${pc?.iceConnectionState || 'unknown'}`)
+    })
+
     pc.ontrack = async (event) => {
       const stream = event.streams[0] ?? null
       if (!stream) return
       remoteTrackLive = stream.getVideoTracks().some((track) => track.readyState === 'live')
+      pushHistory('remoteVideoTrackReceived', remoteTrackLive ? 'OK' : 'INFO', `ontrack fired (live=${String(remoteTrackLive)})`)
+
       try {
         videoEl.srcObject = stream
+        pushHistory('videoElementRendering', 'INFO', 'video srcObject set')
+      } catch (error) {
+        pushHistory('videoElementRendering', 'FAIL', `video srcObject failed: ${compactError(error)}`)
+        return
+      }
+
+      pushHistory('videoElementRendering', 'INFO', 'video play() attempt')
+      try {
         await videoEl.play()
-      } catch {}
+        pushHistory('videoElementRendering', 'OK', 'video play() succeeded')
+      } catch (error) {
+        pushHistory('videoElementRendering', 'FAIL', `video play() failed: ${compactError(error)}`)
+      }
     }
     return pc
   }
@@ -174,8 +241,10 @@ export function createVidconMonitorEngine({ onUpdate, videoEl }: EngineOptions) 
       await peer.setLocalDescription(answer)
       send({ type: 'answer', sdp: answer.sdp })
       answerSent = true
+      pushHistory('webrtcOfferAnswerCompleted', 'OK', 'answer sent')
     } catch (error) {
-      wsError = `offer/answer failed: ${String(error)}`
+      wsError = `offer/answer failed: ${compactError(error)}`
+      pushHistory('webrtcOfferAnswerCompleted', 'FAIL', wsError)
     }
   }
 
@@ -251,6 +320,7 @@ export function createVidconMonitorEngine({ onUpdate, videoEl }: EngineOptions) 
 
     const controller = new AbortController()
     const timeout = window.setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS)
+    pushHistory('aiServerHealthy', 'INFO', `fetch ${buildHealthUrl(aiBase)}`)
     try {
       const res = await fetch(buildHealthUrl(aiBase), { method: 'GET', cache: 'no-store', signal: controller.signal })
       if (!res.ok) return { state: 'FAIL', detail: `HTTP ${res.status}`, error: `http_${res.status}` }
@@ -260,7 +330,7 @@ export function createVidconMonitorEngine({ onUpdate, videoEl }: EngineOptions) 
       if (payload.ok === true) return { state: 'OK', detail: `healthy ${aiBase}` }
       return { state: 'FAIL', detail: 'health payload missing ok=true', error: 'bad health payload' }
     } catch (error) {
-      return { state: 'FAIL', detail: `health check failed: ${String(error)}`, error: String(error) }
+      return { state: 'FAIL', detail: `health check failed: ${compactError(error)}`, error: compactError(error) }
     } finally {
       window.clearTimeout(timeout)
     }
@@ -285,14 +355,19 @@ export function createVidconMonitorEngine({ onUpdate, videoEl }: EngineOptions) 
       const failedDep = hasFailedDependency(block)
       if (failedDep) {
         transition(id, { state: 'NOT_STARTED', detail: `blocked by dependency: ${failedDep}` })
+        pushHistory(id, 'INFO', `skipped (dependency not OK: ${failedDep})`)
         continue
       }
 
+      pushHistory(id, 'INFO', 'check start')
       try {
         const result = await checker()
         transition(id, result)
+        pushHistory(id, result.state === 'FAIL' ? 'FAIL' : result.state === 'OK' ? 'OK' : 'INFO', `check result: ${result.detail}`)
       } catch (error) {
-        transition(id, { state: 'FAIL', detail: `checker failed: ${String(error)}`, error: String(error) })
+        const msg = compactError(error)
+        transition(id, { state: 'FAIL', detail: `checker failed: ${msg}`, error: msg })
+        pushHistory(id, 'FAIL', `checker threw: ${msg}`)
       }
     }
 
@@ -313,17 +388,28 @@ export function createVidconMonitorEngine({ onUpdate, videoEl }: EngineOptions) 
         timer = null
       }
       if (ws) {
-        try { ws.close() } catch {}
+        try {
+          ws.close()
+        } catch {}
         ws = null
       }
       if (pc) {
-        try { pc.close() } catch {}
+        try {
+          pc.close()
+        } catch {}
         pc = null
       }
       if (videoEl.srcObject) videoEl.srcObject = null
     },
+    clearHistory(blockId: MonitorBlockId) {
+      snapshot[blockId].history = []
+      notify()
+    },
     getSnapshot() {
       return structuredClone(snapshot)
+    },
+    addHistoryForTests(blockId: MonitorBlockId, level: HistoryLevel, message: string) {
+      pushHistory(blockId, level, message)
     },
     runOnceForTests: tick,
   }
