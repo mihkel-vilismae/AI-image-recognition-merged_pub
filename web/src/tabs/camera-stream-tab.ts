@@ -12,7 +12,7 @@ import {
 } from './camera-stream-utils'
 import { emitAppEvent } from '../common'
 import { createUiLogger } from './webrtc-logger'
-import { getAiBaseUrlFromStorage, getSignalingUrlFromStorage, STORAGE_AI_BASE_URL_KEY, STORAGE_RELAY_KEY } from './shared-config'
+import { getAiBaseUrlFromStorage, getSignalingUrlFromStorage, STORAGE_AI_BASE_URL_KEY, STORAGE_SIGNALING_URL_KEY } from './shared-config'
 
 type DetectBox = { name?: string; score?: number; xyxy?: number[] }
 
@@ -693,7 +693,7 @@ export function mountCameraStreamTab(root: HTMLElement) {
 
   signalingTargetEl.addEventListener('change', () => {
     signalingTargetEl.value = signalingTargetEl.value.trim()
-    if (signalingTargetEl.value) localStorage.setItem(STORAGE_RELAY_KEY, signalingTargetEl.value)
+    if (signalingTargetEl.value) localStorage.setItem(STORAGE_SIGNALING_URL_KEY, signalingTargetEl.value)
   })
 
   btnShowVideoStreamEl.addEventListener('click', () => {

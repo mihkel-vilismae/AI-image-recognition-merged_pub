@@ -10,6 +10,6 @@ def test_health_ok():
     assert r.status_code == 200
     payload = r.json()
     assert payload["ok"] is True
-    assert payload["service"] == "ai-server"
+    assert payload["service"] == "ai-image-recognition"
     assert isinstance(payload.get("time"), str)
     assert isinstance(payload.get("version"), str)

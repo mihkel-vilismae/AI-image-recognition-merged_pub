@@ -1,9 +1,9 @@
 import { buildHealthUrl, normalizeAiBaseUrl } from './camera-stream-utils'
 import { getAiBaseUrlFromStorage, getSignalingUrlFromStorage } from './shared-config'
 
-export const VIDCON_POLL_MS = 1500
+export const VIDCON_POLL_MS = 5000
 const HEARTBEAT_MAX_AGE_MS = 5000
-const HEALTH_TIMEOUT_MS = 1200
+const HEALTH_TIMEOUT_MS = 3000
 export const MAX_HISTORY_ENTRIES = 200
 
 export type MonitorState = 'NOT_STARTED' | 'CHECKING' | 'OK' | 'FAIL' | 'DISABLED'
@@ -78,6 +78,24 @@ function compactError(error: unknown): string {
   return raw.replace(/\s+/g, ' ').slice(0, 180)
 }
 
+function fingerprint(result: CheckerResult): string {
+  return `${result.state}|${result.detail}|${result.error ?? ''}`
+}
+
+function classifyHealthError(error: unknown): { detail: string; error: string } {
+  const msg = compactError(error).toLowerCase()
+  if (msg.includes('aborted') || msg.includes('timeout')) {
+    return { detail: 'health check timeout', error: 'timeout' }
+  }
+  if (msg.includes('failed to fetch') || msg.includes('networkerror') || msg.includes('err_connection_refused') || msg.includes('refused')) {
+    return { detail: 'health endpoint unreachable (connection refused)', error: 'connection_refused' }
+  }
+  if (msg.includes('cors') || msg.includes('mixed-content') || msg.includes('blocked')) {
+    return { detail: 'health blocked by CORS or mixed-content policy', error: 'cors_or_mixed_content' }
+  }
+  return { detail: `health check failed: ${compactError(error)}`, error: compactError(error) }
+}
+
 export function createVidconMonitorEngine({ onUpdate, videoEl }: EngineOptions) {
   const snapshot = initialSnapshot()
   let timer: number | null = null
@@ -91,6 +109,7 @@ export function createVidconMonitorEngine({ onUpdate, videoEl }: EngineOptions) 
   let remoteTrackLive = false
   let renderSampleTime = 0
   let lastTransitionState: Partial<Record<MonitorBlockId, MonitorState>> = {}
+  const lastResultFingerprint: Partial<Record<MonitorBlockId, string>> = {}
 
   function pushHistory(blockId: MonitorBlockId, level: HistoryLevel, message: string) {
     const block = snapshot[blockId]
@@ -113,13 +132,18 @@ export function createVidconMonitorEngine({ onUpdate, videoEl }: EngineOptions) 
     block.lastError = next.error ?? null
     if (next.state === 'OK') block.lastOkAt = Date.now()
 
-    if (lastTransitionState[blockId] !== next.state) {
+    if (lastTransitionState[blockId] !== next.state && prev !== next.state) {
       lastTransitionState[blockId] = next.state
-      if (prev !== next.state) {
-        console.info(`[VIDCON] ${block.title} ${prev} -> ${next.state}`)
-        pushHistory(blockId, next.state === 'FAIL' ? 'FAIL' : 'INFO', `state ${prev} -> ${next.state}`)
-      }
+      console.info(`[VIDCON] ${block.title} ${prev} -> ${next.state}`)
+      pushHistory(blockId, next.state === 'FAIL' ? 'FAIL' : 'INFO', `state ${prev} -> ${next.state}`)
     }
+  }
+
+  function recordResult(blockId: MonitorBlockId, result: CheckerResult) {
+    const nextFingerprint = fingerprint(result)
+    if (lastResultFingerprint[blockId] === nextFingerprint) return
+    lastResultFingerprint[blockId] = nextFingerprint
+    pushHistory(blockId, result.state === 'FAIL' ? 'FAIL' : result.state === 'OK' ? 'OK' : 'INFO', result.detail)
   }
 
   function hasFailedDependency(block: MonitorBlock): string | null {
@@ -133,6 +157,12 @@ export function createVidconMonitorEngine({ onUpdate, videoEl }: EngineOptions) 
     const signalingUrl = getSignalingUrlFromStorage().trim()
     if (!signalingUrl) return
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return
+
+    if (ws && ws.readyState < WebSocket.CLOSING) {
+      try {
+        ws.close()
+      } catch {}
+    }
 
     wsError = null
     pushHistory('signalingRelayReachable', 'INFO', `WS connect attempt to ${signalingUrl}`)
@@ -160,12 +190,10 @@ export function createVidconMonitorEngine({ onUpdate, videoEl }: EngineOptions) 
       if (payload.type === 'publisher_heartbeat') {
         lastHeartbeatAt = Date.now()
         heartbeatPayload = payload
-        pushHistory('phonePublisherPageLoaded', 'OK', 'heartbeat received from publisher')
       }
 
       if (payload.type === 'offer' && typeof payload.sdp === 'string') {
         offerSeen = true
-        pushHistory('webrtcOfferAnswerCompleted', 'INFO', 'offer received')
         void handleOffer(payload.sdp)
       }
 
@@ -222,7 +250,6 @@ export function createVidconMonitorEngine({ onUpdate, videoEl }: EngineOptions) 
         return
       }
 
-      pushHistory('videoElementRendering', 'INFO', 'video play() attempt')
       try {
         await videoEl.play()
         pushHistory('videoElementRendering', 'OK', 'video play() succeeded')
@@ -250,7 +277,7 @@ export function createVidconMonitorEngine({ onUpdate, videoEl }: EngineOptions) 
 
   async function checkSignaling(): Promise<CheckerResult> {
     const signalingUrl = getSignalingUrlFromStorage().trim()
-    if (!signalingUrl) return { state: 'FAIL', detail: 'missing signaling URL in config', error: 'missing signaling URL' }
+    if (!signalingUrl) return { state: 'FAIL', detail: 'missing signaling URL config', error: 'missing signaling URL' }
 
     ensureWebSocket()
 
@@ -263,9 +290,7 @@ export function createVidconMonitorEngine({ onUpdate, videoEl }: EngineOptions) 
   function checkHeartbeat(): CheckerResult {
     if (!lastHeartbeatAt) return { state: 'FAIL', detail: 'no heartbeat seen from phone publisher', error: 'no heartbeat' }
     const ageMs = Date.now() - lastHeartbeatAt
-    if (ageMs > HEARTBEAT_MAX_AGE_MS) {
-      return { state: 'FAIL', detail: `heartbeat stale (${ageMs}ms)`, error: 'stale heartbeat' }
-    }
+    if (ageMs > HEARTBEAT_MAX_AGE_MS) return { state: 'FAIL', detail: `heartbeat stale (${ageMs}ms)`, error: 'stale heartbeat' }
     return { state: 'OK', detail: `last heartbeat ${ageMs}ms ago` }
   }
 
@@ -273,9 +298,7 @@ export function createVidconMonitorEngine({ onUpdate, videoEl }: EngineOptions) 
     const camera = (heartbeatPayload?.camera as Record<string, unknown> | undefined) || {}
     const active = camera.active === true
     const trackLive = camera.trackReadyState === 'live'
-    if (!active || !trackLive) {
-      return { state: 'FAIL', detail: 'camera inactive/not live on phone', error: 'camera inactive' }
-    }
+    if (!active || !trackLive) return { state: 'FAIL', detail: 'camera inactive/not live on phone', error: 'camera inactive' }
     const width = camera.width ? ` ${camera.width}x${camera.height}` : ''
     return { state: 'OK', detail: `active${width}` }
   }
@@ -304,9 +327,7 @@ export function createVidconMonitorEngine({ onUpdate, videoEl }: EngineOptions) 
 
   function checkVideoRendering(): CheckerResult {
     if (!videoEl.srcObject) return { state: 'NOT_STARTED', detail: 'video has no srcObject' }
-    if (videoEl.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
-      return { state: 'CHECKING', detail: `readyState=${videoEl.readyState}` }
-    }
+    if (videoEl.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return { state: 'CHECKING', detail: `readyState=${videoEl.readyState}` }
     const current = videoEl.currentTime
     const progressing = current > renderSampleTime
     renderSampleTime = current
@@ -320,17 +341,19 @@ export function createVidconMonitorEngine({ onUpdate, videoEl }: EngineOptions) 
 
     const controller = new AbortController()
     const timeout = window.setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS)
-    pushHistory('aiServerHealthy', 'INFO', `fetch ${buildHealthUrl(aiBase)}`)
     try {
       const res = await fetch(buildHealthUrl(aiBase), { method: 'GET', cache: 'no-store', signal: controller.signal })
-      if (!res.ok) return { state: 'FAIL', detail: `HTTP ${res.status}`, error: `http_${res.status}` }
+      if (!res.ok) return { state: 'FAIL', detail: `health HTTP ${res.status}`, error: `http_${res.status}` }
       const contentType = (res.headers.get('content-type') || '').toLowerCase()
-      if (!contentType.includes('application/json')) return { state: 'FAIL', detail: 'health returned non-JSON', error: 'non-json health' }
+      if (!contentType.includes('application/json')) {
+        return { state: 'FAIL', detail: 'non-JSON health response', error: 'non_json_response' }
+      }
       const payload = (await res.json()) as Record<string, unknown>
       if (payload.ok === true) return { state: 'OK', detail: `healthy ${aiBase}` }
-      return { state: 'FAIL', detail: 'health payload missing ok=true', error: 'bad health payload' }
+      return { state: 'FAIL', detail: 'health payload missing ok=true', error: 'bad_health_payload' }
     } catch (error) {
-      return { state: 'FAIL', detail: `health check failed: ${compactError(error)}`, error: compactError(error) }
+      const classified = classifyHealthError(error)
+      return { state: 'FAIL', detail: classified.detail, error: classified.error }
     } finally {
       window.clearTimeout(timeout)
     }
@@ -339,6 +362,7 @@ export function createVidconMonitorEngine({ onUpdate, videoEl }: EngineOptions) 
   async function tick() {
     const signaling = await checkSignaling()
     transition('signalingRelayReachable', signaling)
+    recordResult('signalingRelayReachable', signaling)
 
     const ordered: Array<[MonitorBlockId, () => CheckerResult | Promise<CheckerResult>]> = [
       ['phonePublisherPageLoaded', checkHeartbeat],
@@ -354,20 +378,21 @@ export function createVidconMonitorEngine({ onUpdate, videoEl }: EngineOptions) 
       const block = snapshot[id]
       const failedDep = hasFailedDependency(block)
       if (failedDep) {
-        transition(id, { state: 'NOT_STARTED', detail: `blocked by dependency: ${failedDep}` })
-        pushHistory(id, 'INFO', `skipped (dependency not OK: ${failedDep})`)
+        const blocked: CheckerResult = { state: 'NOT_STARTED', detail: `blocked by dependency: ${failedDep}` }
+        transition(id, blocked)
+        recordResult(id, blocked)
         continue
       }
 
-      pushHistory(id, 'INFO', 'check start')
       try {
         const result = await checker()
         transition(id, result)
-        pushHistory(id, result.state === 'FAIL' ? 'FAIL' : result.state === 'OK' ? 'OK' : 'INFO', `check result: ${result.detail}`)
+        recordResult(id, result)
       } catch (error) {
         const msg = compactError(error)
-        transition(id, { state: 'FAIL', detail: `checker failed: ${msg}`, error: msg })
-        pushHistory(id, 'FAIL', `checker threw: ${msg}`)
+        const failed: CheckerResult = { state: 'FAIL', detail: `checker failed: ${msg}`, error: msg }
+        transition(id, failed)
+        recordResult(id, failed)
       }
     }
 

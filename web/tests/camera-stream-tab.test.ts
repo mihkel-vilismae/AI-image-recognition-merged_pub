@@ -98,7 +98,7 @@ describe('camera stream tab', () => {
     mountCameraStreamTab(root)
 
     expect(root.querySelector<HTMLInputElement>('#signalingTarget')?.value).toBe('ws://localhost:8765')
-    expect(root.querySelector<HTMLInputElement>('#ownUrl')?.value).toBe('http://localhost:5175')
+    expect(root.querySelector<HTMLInputElement>('#ownUrl')?.value).toBe('http://localhost:8000')
   })
 
   it('detect signaling button toggles result text on consecutive clicks', async () => {
@@ -145,7 +145,7 @@ describe('camera stream tab', () => {
 
     expect(fetchMock).toHaveBeenCalled()
     const detectUrl = String(fetchMock.mock.calls[0]?.[0] ?? "")
-    expect(detectUrl).toContain('http://localhost:5175/api/detect?conf=')
+    expect(detectUrl).toContain('http://localhost:8000/api/detect?conf=')
   })
 
   it('treats HTML health responses as unhealthy', async () => {

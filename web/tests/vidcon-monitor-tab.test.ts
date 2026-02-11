@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { mountVidconMonitorTab } from '../src/tabs/vidcon-monitor-tab'
-import { createVidconMonitorEngine, MAX_HISTORY_ENTRIES } from '../src/tabs/vidcon-monitor-engine'
+import { createVidconMonitorEngine, MAX_HISTORY_ENTRIES, VIDCON_POLL_MS } from '../src/tabs/vidcon-monitor-engine'
 
 class FakeWebSocket {
   static OPEN = 1
@@ -11,7 +11,7 @@ class FakeWebSocket {
   readyState = FakeWebSocket.CONNECTING
   private handlers = new Map<string, Array<(event?: MessageEvent) => void>>()
 
-  constructor(_url: string) {
+  constructor(public url: string) {
     if (FakeWebSocket.shouldOpen) {
       queueMicrotask(() => {
         this.readyState = FakeWebSocket.OPEN
@@ -47,6 +47,7 @@ describe('VidConMonitor tab', () => {
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
     document.body.innerHTML = ''
+    localStorage.clear()
     FakeWebSocket.shouldOpen = true
     vi.stubGlobal('WebSocket', FakeWebSocket as unknown as typeof WebSocket)
     vi.stubGlobal('RTCPeerConnection', class {
@@ -73,6 +74,40 @@ describe('VidConMonitor tab', () => {
         }),
       ),
     )
+  })
+
+  it('uses defaults ws://localhost:8765 and http://localhost:8000 when storage is empty', async () => {
+    const urls: string[] = []
+    vi.stubGlobal('WebSocket', class extends FakeWebSocket {
+      constructor(url: string) {
+        super(url)
+        urls.push(url)
+      }
+    } as unknown as typeof WebSocket)
+
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      urls.push(String(url))
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const engine = createVidconMonitorEngine({
+      videoEl: document.createElement('video'),
+      onUpdate: () => {},
+    })
+    await engine.runOnceForTests()
+
+    expect(urls.some((u) => u.includes('ws://localhost:8765'))).toBe(true)
+    expect(urls.some((u) => u.includes('http://localhost:8000/health'))).toBe(true)
+  })
+
+  it('starts polling at 5000ms interval', () => {
+    const setIntervalSpy = vi.spyOn(window, 'setInterval')
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    mountVidconMonitorTab(root)
+    expect(setIntervalSpy).toHaveBeenCalled()
+    expect(setIntervalSpy.mock.calls.at(-1)?.[1]).toBe(VIDCON_POLL_MS)
   })
 
   it('renders all required blocks and history action icons', () => {
@@ -130,6 +165,25 @@ describe('VidConMonitor tab', () => {
     expect(last.aiServerHealthy.history.length).toBeGreaterThan(0)
   })
 
+  it('deduplicates repeated identical failures in history', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new TypeError('Failed to fetch')
+    }))
+
+    const engine = createVidconMonitorEngine({
+      videoEl: document.createElement('video'),
+      onUpdate: () => {},
+    })
+
+    await engine.runOnceForTests()
+    const count1 = engine.getSnapshot().aiServerHealthy.history.length
+    await engine.runOnceForTests()
+    await engine.runOnceForTests()
+    const count2 = engine.getSnapshot().aiServerHealthy.history.length
+
+    expect(count2 - count1).toBeLessThanOrEqual(1)
+  })
+
   it('history is capped at 200 entries per block', () => {
     const engine = createVidconMonitorEngine({
       videoEl: document.createElement('video'),
@@ -164,22 +218,19 @@ describe('VidConMonitor tab', () => {
     expect(body.textContent).toContain('No history yet.')
   })
 
-  it('checker exceptions are captured as FAIL', async () => {
+  it('marks non-JSON health responses as FAIL without dumping body', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('<html>x</html>', { status: 200, headers: { 'Content-Type': 'text/html' } })))
     const updates: Array<Record<string, unknown>> = []
-    const video = document.createElement('video')
-    const fetchMock = vi.fn(async () => {
-      throw new Error('boom')
-    })
-    vi.stubGlobal('fetch', fetchMock)
 
     const engine = createVidconMonitorEngine({
-      videoEl: video,
+      videoEl: document.createElement('video'),
       onUpdate: (snapshot) => updates.push(snapshot as unknown as Record<string, unknown>),
     })
 
     await engine.runOnceForTests()
     const last = updates.at(-1) as any
     expect(last.aiServerHealthy.state).toBe('FAIL')
-    expect(String(last.aiServerHealthy.detail)).toContain('health check failed')
+    expect(String(last.aiServerHealthy.detail)).toContain('non-JSON')
+    expect(String(last.aiServerHealthy.detail)).not.toContain('<html>')
   })
 })

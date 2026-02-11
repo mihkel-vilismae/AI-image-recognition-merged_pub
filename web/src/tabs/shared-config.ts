@@ -1,11 +1,12 @@
-import { DEFAULT_AI_BASE_URL, DEFAULT_SIGNALING_PORT } from './camera-stream-utils'
-
-export const STORAGE_RELAY_KEY = 'webrtc.lastGoodRelay'
+export const STORAGE_SIGNALING_URL_KEY = 'vidcon.signalingUrl'
 export const STORAGE_AI_BASE_URL_KEY = 'cameraStream.aiBaseUrl'
 
+export const DEFAULT_SIGNALING_URL = 'ws://localhost:8765'
+export const DEFAULT_AI_BASE_URL = 'http://localhost:8000'
+
 export function getSignalingUrlFromStorage(): string {
-  const stored = localStorage.getItem(STORAGE_RELAY_KEY)?.trim() || ''
-  return stored || `ws://localhost:${DEFAULT_SIGNALING_PORT}`
+  const stored = localStorage.getItem(STORAGE_SIGNALING_URL_KEY)?.trim() || ''
+  return stored || DEFAULT_SIGNALING_URL
 }
 
 export function getAiBaseUrlFromStorage(): string {
