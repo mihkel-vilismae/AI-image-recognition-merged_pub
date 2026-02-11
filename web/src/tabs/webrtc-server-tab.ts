@@ -196,6 +196,11 @@ let pc, ws, stream;
 let sentCandidates = 0;
 let recvCandidates = 0;
 let heartbeatTimer = null;
+let remoteAnswerApplied = false;
+let remoteAnswerSdp = "";
+let applyingRemoteAnswer = false;
+let pendingRemoteCandidates = [];
+const seenRemoteCandidateKeys = new Set();
 const logEl = document.getElementById("log");
 const errorEl = document.getElementById("error");
 const ts = () => new Date().toISOString();
@@ -221,6 +226,71 @@ const sendHeartbeat = () => {
   const v = stream ? stream.getVideoTracks()[0] : null;
   ws.send(JSON.stringify({ type: "publisher_heartbeat", ts: Date.now(), camera: { active: Boolean(v), trackReadyState: v ? v.readyState : "none", width: v && v.getSettings ? v.getSettings().width : null, height: v && v.getSettings ? v.getSettings().height : null }, webrtc: { sending: pc ? pc.connectionState === "connected" : false } }));
 };
+
+function candidateKey(candidate) {
+  if (!candidate || typeof candidate !== "object") return "invalid";
+  return String(candidate.candidate || "") + "|" + String(candidate.sdpMid || "") + "|" + String(candidate.sdpMLineIndex || "");
+}
+function parseIncomingMessage(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const msg = raw;
+  if (typeof msg.type === "string") return msg;
+  if (typeof msg.sdp === "string") {
+    const inferredType = pc && pc.signalingState === "have-local-offer" ? "answer" : "offer";
+    push("INFO", "WS", "missing type; inferred", { inferredType });
+    return { ...msg, type: inferredType };
+  }
+  return null;
+}
+async function applyRemoteAnswerOnce(answerSdp) {
+  if (!pc) {
+    push("INFO", "WEBRTC", "answer ignored: no peer connection");
+    return;
+  }
+  if (applyingRemoteAnswer) {
+    push("INFO", "WEBRTC", "answer ignored: apply in-flight");
+    return;
+  }
+  if (remoteAnswerApplied) {
+    if (answerSdp === remoteAnswerSdp) {
+      push("INFO", "WEBRTC", "duplicate answer ignored");
+      return;
+    }
+    push("INFO", "WEBRTC", "different answer ignored after apply", { signalingState: pc.signalingState });
+    return;
+  }
+  if (pc.signalingState !== "have-local-offer") {
+    push("INFO", "WEBRTC", "answer ignored due to signalingState", { signalingState: pc.signalingState });
+    return;
+  }
+
+  applyingRemoteAnswer = true;
+  try {
+    push("STEP", "WEBRTC", "setRemoteDescription start");
+    await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+    remoteAnswerApplied = true;
+    remoteAnswerSdp = answerSdp;
+    push("STEP", "WEBRTC", "setRemoteDescription ok");
+    if (pendingRemoteCandidates.length > 0) {
+      const queue = pendingRemoteCandidates.slice();
+      pendingRemoteCandidates = [];
+      for (const candidate of queue) {
+        try {
+          await pc.addIceCandidate(candidate);
+          recvCandidates += 1;
+        } catch (err) {
+          push("ERR", "WEBRTC", "queued addIceCandidate failed", { raw: String(err) });
+        }
+      }
+      push("WEBRTC", "WEBRTC", "queued candidates flushed", { flushed: queue.length, recvCandidates });
+    }
+  } catch (err) {
+    push("ERR", "WEBRTC", "setRemoteDescription failed", { name: err && err.name, message: err && err.message, raw: String(err), signalingState: pc.signalingState });
+  } finally {
+    applyingRemoteAnswer = false;
+  }
+}
+
 document.getElementById("btnStart").onclick = async () => {
   const btn = document.getElementById("btnStart");
   btn.disabled = true;
@@ -270,23 +340,49 @@ document.getElementById("btnStart").onclick = async () => {
     };
     ws.onmessage = async (event) => {
       push("WS", "WS", "message", { size: String(event.data || "").length });
-      let msg;
+      let parsed;
       try {
-        msg = JSON.parse(event.data);
+        parsed = JSON.parse(event.data);
       } catch (err) {
         push("ERR", "WS", "json parse failed", { raw: String(event.data), error: String(err) });
         return;
       }
-      if (msg.type === "answer") {
-        try {
-          push("STEP", "WEBRTC", "setRemoteDescription start");
-          await pc.setRemoteDescription({ type: "answer", sdp: msg.sdp });
-          push("STEP", "WEBRTC", "setRemoteDescription ok");
-        } catch (err) {
-          push("ERR", "WEBRTC", "setRemoteDescription failed", { name: err && err.name, message: err && err.message, raw: String(err) });
-        }
+
+      const msg = parseIncomingMessage(parsed);
+      if (!msg || typeof msg.type !== "string") {
+        push("INFO", "WS", "message ignored: missing/unknown type");
+        return;
       }
+
+      if (msg.type === "answer") {
+        if (typeof msg.sdp !== "string" || !msg.sdp) {
+          push("INFO", "WEBRTC", "answer ignored: missing sdp");
+          return;
+        }
+        await applyRemoteAnswerOnce(msg.sdp);
+        return;
+      }
+
       if (msg.type === "candidate") {
+        if (!msg.candidate) return;
+        const key = candidateKey(msg.candidate);
+        if (seenRemoteCandidateKeys.has(key)) {
+          push("INFO", "WEBRTC", "duplicate candidate ignored");
+          return;
+        }
+        seenRemoteCandidateKeys.add(key);
+
+        if (!pc) {
+          push("INFO", "WEBRTC", "candidate ignored: no peer connection");
+          return;
+        }
+
+        if (!pc.remoteDescription) {
+          pendingRemoteCandidates.push(msg.candidate);
+          push("INFO", "WEBRTC", "candidate queued until remote description is set", { queued: pendingRemoteCandidates.length });
+          return;
+        }
+
         try {
           recvCandidates += 1;
           await pc.addIceCandidate(msg.candidate);
