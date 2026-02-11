@@ -18,6 +18,8 @@ let heartbeatTimer = null;
 let remoteAnswerApplied = false;
 let remoteAnswerSdp = "";
 let applyingRemoteAnswer = false;
+let currentOfferSdp = "";
+let lastIgnoredAnswerKey = "";
 let pendingRemoteCandidates = [];
 const seenRemoteCandidateKeys = new Set();
 const logEl = document.getElementById("log");
@@ -61,25 +63,40 @@ function parseIncomingMessage(raw) {
   }
   return null;
 }
+function noteIgnoredAnswer(reason, data) {
+  const key = reason + "|" + JSON.stringify(data || {});
+  if (key === lastIgnoredAnswerKey) return;
+  lastIgnoredAnswerKey = key;
+  push("INFO", "WEBRTC", reason, data);
+}
+function markOfferCreated(offerSdp) {
+  currentOfferSdp = String(offerSdp || "");
+  remoteAnswerApplied = false;
+  remoteAnswerSdp = "";
+  applyingRemoteAnswer = false;
+  pendingRemoteCandidates = [];
+  lastIgnoredAnswerKey = "";
+}
+
 async function applyRemoteAnswerOnce(answerSdp) {
   if (!pc) {
-    push("INFO", "WEBRTC", "answer ignored: no peer connection");
+    noteIgnoredAnswer("answer ignored: no peer connection");
     return;
   }
   if (applyingRemoteAnswer) {
-    push("INFO", "WEBRTC", "answer ignored: apply in-flight");
+    noteIgnoredAnswer("answer ignored: apply in-flight");
     return;
   }
   if (remoteAnswerApplied) {
     if (answerSdp === remoteAnswerSdp) {
-      push("INFO", "WEBRTC", "duplicate answer ignored");
+      noteIgnoredAnswer("duplicate answer ignored");
       return;
     }
-    push("INFO", "WEBRTC", "different answer ignored after apply", { signalingState: pc.signalingState });
+    noteIgnoredAnswer("different answer ignored after apply", { signalingState: pc.signalingState });
     return;
   }
   if (pc.signalingState !== "have-local-offer") {
-    push("INFO", "WEBRTC", "answer ignored due to signalingState", { signalingState: pc.signalingState });
+    noteIgnoredAnswer("answer ignored due to signalingState", { signalingState: pc.signalingState });
     return;
   }
 
@@ -89,6 +106,7 @@ async function applyRemoteAnswerOnce(answerSdp) {
     await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
     remoteAnswerApplied = true;
     remoteAnswerSdp = answerSdp;
+    lastIgnoredAnswerKey = "";
     push("STEP", "WEBRTC", "setRemoteDescription ok");
     if (pendingRemoteCandidates.length > 0) {
       const queue = pendingRemoteCandidates.slice();
@@ -148,6 +166,7 @@ document.getElementById("btnStart").onclick = async () => {
         push("STEP", "WEBRTC", "createOffer ok", { sdpSize: (offer.sdp || "").length });
         push("STEP", "WEBRTC", "setLocalDescription start");
         await pc.setLocalDescription(offer);
+        markOfferCreated(offer.sdp);
         push("STEP", "WEBRTC", "setLocalDescription ok");
         ws.send(JSON.stringify({ type: "offer", sdp: offer.sdp }));
         push("WS", "WS", "offer sent", { sdpSize: (offer.sdp || "").length });

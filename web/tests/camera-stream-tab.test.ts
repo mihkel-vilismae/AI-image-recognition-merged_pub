@@ -67,6 +67,10 @@ describe('camera stream tab', () => {
     vi.stubGlobal('RTCPeerConnection', FakeRTCPeerConnection as unknown as typeof RTCPeerConnection)
     vi.spyOn(HTMLVideoElement.prototype, 'play').mockImplementation(async () => undefined)
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(() => null)
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      cb(0)
+      return 1
+    })
   })
 
   it('keeps AI server controls in dedicated section and updates health status', async () => {
@@ -117,13 +121,17 @@ describe('camera stream tab', () => {
     expect(result.textContent).toBe('')
   })
 
-  it('renders separate video and controls containers in stream panel', () => {
+  it('renders controls above video and keeps video non-overlapping', () => {
     const root = document.createElement('div')
     document.body.appendChild(root)
     mountCameraStreamTab(root)
 
-    expect(root.querySelector('#cameraVideoPanel')).not.toBeNull()
-    expect(root.querySelector('#cameraControlsPanel')).not.toBeNull()
+    const streamPanel = root.querySelector('#streamPanel')!
+    const controls = root.querySelector('#cameraControlsPanel')!
+    const videoPanel = root.querySelector('#cameraVideoPanel')!
+
+    expect(streamPanel.firstElementChild).toBe(controls)
+    expect(streamPanel.lastElementChild).toBe(videoPanel)
     expect(root.querySelector('#streamPanel .videoOverlay.absolute')).toBeNull()
   })
 
@@ -169,7 +177,7 @@ describe('camera stream tab', () => {
     expect(root.querySelector('#cameraStreamStatus')?.textContent).toContain('did not return JSON')
   })
 
-  it('camera flip toggles constraints and stops old tracks', async () => {
+  it('camera flip uses restart path with exact facingMode and stops old tracks', async () => {
     const root = document.createElement('div')
     document.body.appendChild(root)
 
@@ -201,8 +209,8 @@ describe('camera stream tab', () => {
     root.querySelector<HTMLButtonElement>('#btnCameraBack')!.click()
     await new Promise((resolve) => setTimeout(resolve, 0))
 
-    expect(gum).toHaveBeenNthCalledWith(1, { video: { facingMode: 'user' }, audio: false })
-    expect(gum).toHaveBeenNthCalledWith(2, { video: { facingMode: 'environment' }, audio: false })
+    expect(gum).toHaveBeenNthCalledWith(1, { video: { facingMode: { exact: 'user' } }, audio: false })
+    expect(gum).toHaveBeenNthCalledWith(2, { video: { facingMode: { exact: 'environment' } }, audio: false })
     expect(firstStop).toHaveBeenCalled()
     expect(root.querySelector('#cameraFacingState')?.textContent).toContain('back')
   })

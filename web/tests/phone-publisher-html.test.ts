@@ -41,6 +41,8 @@ describe('phone publisher html generation', () => {
     expect(html).toContain('remoteAnswerApplied = false')
     expect(html).toContain('duplicate answer ignored')
     expect(html).toContain('applyRemoteAnswerOnce')
+    expect(html).toContain('markOfferCreated')
+    expect(html).toContain('answer ignored due to signalingState')
     expect(html).toContain('pendingRemoteCandidates.push')
     expect(html).toContain('queued candidates flushed')
     expect(root.querySelector('[data-step-dot="phone"]')?.classList.contains('step-dot--ok')).toBe(true)

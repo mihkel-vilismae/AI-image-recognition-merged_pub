@@ -26,6 +26,10 @@ type SignalingMessage = {
   candidate?: unknown
 }
 
+
+const STORAGE_FRONT_DEVICE_ID_KEY = 'camera_stream.last_device_id.front'
+const STORAGE_BACK_DEVICE_ID_KEY = 'camera_stream.last_device_id.back'
+
 function setScanIndicator(el: HTMLSpanElement, state: 'idle' | 'searching' | 'found' | 'failed') {
   el.classList.remove('idle', 'searching', 'found', 'failed')
   el.classList.add(state)
@@ -64,13 +68,7 @@ export function mountCameraStreamTab(root: HTMLElement) {
         <p>hello camera stream</p>
 
         <div id="streamPanel" class="streamPanel streamPanel--top">
-          <div class="cameraVideoPanel" id="cameraVideoPanel">
-            <div class="videoWrap cameraPreviewWrap">
-            <video id="streamVideo" class="video" autoplay muted playsinline></video>
-            <canvas id="streamOverlay" class="videoOverlay"></canvas>
-          </div>
-          </div>
-          <div id="cameraControlsPanel" class="cameraControlsPanel">
+          <div id="cameraControlsPanel" class="cameraControlsPanel controlsContainer">
             <div class="cameraStreamTopRow">
               <button id="btnStartLocalCamera" class="btn" type="button">Start local camera preview</button>
               <button id="btnCameraFront" class="btn" type="button">Front camera</button>
@@ -80,6 +78,12 @@ export function mountCameraStreamTab(root: HTMLElement) {
             <div class="cameraStreamTopRow">
               <button id="btnRealtimeDetectStream" class="btn" type="button">Detect frames in real time</button>
               <span id="realtimeResult" class="hint mono"></span>
+            </div>
+          </div>
+          <div class="cameraVideoPanel videoContainer" id="cameraVideoPanel">
+            <div class="videoWrap cameraPreviewWrap">
+              <video id="streamVideo" class="video" autoplay muted playsinline></video>
+              <canvas id="streamOverlay" class="videoOverlay"></canvas>
             </div>
           </div>
         </div>
@@ -184,7 +188,7 @@ export function mountCameraStreamTab(root: HTMLElement) {
   let connectStatusTimer: number | null = null
   let stream: MediaStream | null = null
   let localStream: MediaStream | null = null
-  let activeFacingMode: 'user' | 'environment' = 'environment'
+  let activeFacingMode: 'front' | 'back' = 'back'
   let detectTimer: number | null = null
   let peerConnection: RTCPeerConnection | null = null
   let remoteTrackSeen = false
@@ -209,10 +213,15 @@ export function mountCameraStreamTab(root: HTMLElement) {
   })
 
   function setFacingUiState() {
-    const modeLabel = activeFacingMode === 'user' ? 'front' : 'back'
-    cameraFacingStateEl.textContent = `Active camera: ${modeLabel}`
-    btnCameraFrontEl.classList.toggle('btnActive', activeFacingMode === 'user')
-    btnCameraBackEl.classList.toggle('btnActive', activeFacingMode === 'environment')
+    cameraFacingStateEl.textContent = `Active camera: ${activeFacingMode}`
+    btnCameraFrontEl.classList.toggle('btnActive', activeFacingMode === 'front')
+    btnCameraBackEl.classList.toggle('btnActive', activeFacingMode === 'back')
+  }
+
+  function setCameraButtonsBusy(busy: boolean) {
+    btnStartLocalCameraEl.disabled = busy
+    btnCameraFrontEl.disabled = busy
+    btnCameraBackEl.disabled = busy
   }
 
   function stopTracks(target: MediaStream | null) {
@@ -224,6 +233,7 @@ export function mountCameraStreamTab(root: HTMLElement) {
     logger.log('VIDEO', 'assigning stream to video', { source })
     try {
       streamVideoEl.srcObject = nextStream
+      streamVideoEl.muted = true
       logger.log('VIDEO', 'stream assigned to video element', { source })
     } catch (error) {
       logger.error('VIDEO', 'failed assigning stream to video element', { source, error: String(error) })
@@ -238,45 +248,103 @@ export function mountCameraStreamTab(root: HTMLElement) {
     }
   }
 
-  async function startLocalCameraPreview(nextFacingMode: 'user' | 'environment') {
+  async function requestFacingModeStream(targetFacing: 'front' | 'back'): Promise<MediaStream> {
+    const facingMode = targetFacing === 'front' ? 'user' : 'environment'
+    try {
+      return await navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: facingMode } }, audio: false })
+    } catch (error) {
+      const errorName = String((error as { name?: string } | null)?.name || '')
+      if (errorName !== 'OverconstrainedError' && errorName !== 'NotFoundError') {
+        throw error
+      }
+      logger.warn('MEDIA', 'facingMode exact failed; falling back to device selection', { targetFacing, errorName })
+    }
+
+    const devices = await navigator.mediaDevices.enumerateDevices()
+    const videoInputs = devices.filter((device) => device.kind === 'videoinput')
+    const labelMatcher = targetFacing === 'front' ? 'front' : 'back'
+    const byLabel = videoInputs.find((device) => (device.label || '').toLowerCase().includes(labelMatcher))
+    const storageKey = targetFacing === 'front' ? STORAGE_FRONT_DEVICE_ID_KEY : STORAGE_BACK_DEVICE_ID_KEY
+    const storedDeviceId = localStorage.getItem(storageKey) || ''
+
+    const selected = byLabel
+      ?? (storedDeviceId ? videoInputs.find((device) => device.deviceId === storedDeviceId) : undefined)
+      ?? videoInputs[0]
+
+    if (selected?.deviceId) {
+      return navigator.mediaDevices.getUserMedia({
+        video: { deviceId: { exact: selected.deviceId } },
+        audio: false,
+      })
+    }
+
+    if (storedDeviceId) {
+      return navigator.mediaDevices.getUserMedia({
+        video: { deviceId: { exact: storedDeviceId } },
+        audio: false,
+      })
+    }
+
+    return navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+  }
+
+  async function restartLocalPreview(targetFacing: 'front' | 'back'): Promise<void> {
     if (!navigator.mediaDevices?.getUserMedia) {
       showVideoResultEl.textContent = 'Camera APIs are not available in this browser/runtime.'
       logger.error('MEDIA', 'getUserMedia unavailable')
       return
     }
 
-    activeFacingMode = nextFacingMode
-    setFacingUiState()
-    logger.log('MEDIA', 'requesting media', { facingMode: nextFacingMode })
+    setCameraButtonsBusy(true)
+    const previousFacing = activeFacingMode
+    const previousStream = localStream
+    stopTracks(localStream)
+    localStream = null
+    stream = null
+    streamVideoEl.srcObject = null
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
 
-    const previousLocal = localStream
-    stopTracks(previousLocal)
-
-    const constraints = { video: { facingMode: nextFacingMode }, audio: false }
     try {
-      const nextStream = await navigator.mediaDevices.getUserMedia(constraints)
+      logger.log('MEDIA', 'requesting media restart', { targetFacing })
+      const nextStream = await requestFacingModeStream(targetFacing)
+      const videoTrack = nextStream.getVideoTracks()[0]
+      const usedDeviceId = videoTrack?.getSettings?.().deviceId || videoTrack?.id || ''
+      if (usedDeviceId) {
+        const key = targetFacing === 'front' ? STORAGE_FRONT_DEVICE_ID_KEY : STORAGE_BACK_DEVICE_ID_KEY
+        localStorage.setItem(key, usedDeviceId)
+      }
+
       localStream = nextStream
       stream = nextStream
-      const tracks = nextStream.getTracks().map((track) => ({ kind: track.kind, id: track.id }))
-      logger.log('MEDIA', 'received stream', { facingMode: nextFacingMode, tracks })
+      activeFacingMode = targetFacing
+      setFacingUiState()
       await attachStreamToVideo(nextStream, 'local')
-      showVideoResultEl.textContent = `Local ${nextFacingMode === 'user' ? 'front' : 'back'} camera preview is active.`
+      showVideoResultEl.textContent = `Local ${targetFacing} camera preview is active.`
 
       const sender = peerConnection?.getSenders?.().find((item) => item.track?.kind === 'video')
       const newVideoTrack = nextStream.getVideoTracks()[0]
       if (sender && newVideoTrack && typeof sender.replaceTrack === 'function') {
         try {
           await sender.replaceTrack(newVideoTrack)
-          logger.log('WEBRTC', 'replaceTrack succeeded after camera switch', { facingMode: nextFacingMode })
+          logger.log('WEBRTC', 'replaceTrack succeeded after camera switch', { targetFacing })
         } catch (error) {
           logger.warn('WEBRTC', 'replaceTrack failed after camera switch', { error: String(error) })
         }
       }
+
+      stopTracks(previousStream)
     } catch (error) {
-      logger.error('MEDIA', 'failed to start local camera', { facingMode: nextFacingMode, error: String(error) })
-      showVideoResultEl.textContent = `Failed to start ${nextFacingMode === 'user' ? 'front' : 'back'} camera: ${String(error)}`
-      localStream = null
-      if (previousLocal) localStream = previousLocal
+      logger.error('MEDIA', 'failed to restart local camera', { targetFacing, error: String(error) })
+      showVideoResultEl.textContent = `Failed to start ${targetFacing} camera: ${String(error)}`
+      activeFacingMode = previousFacing
+      setFacingUiState()
+      localStream = previousStream
+      stream = previousStream
+      if (previousStream) {
+        await attachStreamToVideo(previousStream, 'local')
+      }
+    } finally {
+      setCameraButtonsBusy(false)
     }
   }
 
@@ -675,15 +743,15 @@ export function mountCameraStreamTab(root: HTMLElement) {
   })
 
   btnStartLocalCameraEl.addEventListener('click', () => {
-    void startLocalCameraPreview(activeFacingMode)
+    void restartLocalPreview(activeFacingMode)
   })
 
   btnCameraFrontEl.addEventListener('click', () => {
-    void startLocalCameraPreview('user')
+    void restartLocalPreview('front')
   })
 
   btnCameraBackEl.addEventListener('click', () => {
-    void startLocalCameraPreview('environment')
+    void restartLocalPreview('back')
   })
 
   ownUrlEl.addEventListener('change', () => {
