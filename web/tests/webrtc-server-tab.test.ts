@@ -11,12 +11,19 @@ describe('webrtc server tab', () => {
     window.location.hash = '#/webrtc-server'
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (_input: RequestInfo | URL) =>
-        new Response(JSON.stringify({ ok: true }), {
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.endsWith('/')) {
+          return new Response('<!doctype html><html><body><div id="app"></div></body></html>', {
+            status: 200,
+            headers: { 'Content-Type': 'text/html; charset=utf-8' },
+          })
+        }
+        return new Response(JSON.stringify({ ok: true, service: 'ai-server' }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
-        }),
-      ),
+        })
+      }),
     )
   })
 
@@ -109,6 +116,49 @@ describe('webrtc server tab', () => {
 
     const relayHealthCell = root.querySelector<HTMLElement>('[data-component="relay"] [data-field="healthUrl"]')
     expect(relayHealthCell?.textContent).toContain('http://localhost:8766/health')
+  })
+
+
+  it('marks AI health as failed when AI endpoint returns html instead of json', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('8000/health')) {
+          return new Response('<!doctype html><html><body>vite</body></html>', {
+            status: 200,
+            headers: { 'Content-Type': 'text/html; charset=utf-8' },
+          })
+        }
+        if (url.endsWith('/')) {
+          return new Response('<!doctype html><html><body><div id="app"></div></body></html>', {
+            status: 200,
+            headers: { 'Content-Type': 'text/html; charset=utf-8' },
+          })
+        }
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }),
+    )
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const root = document.createElement('div')
+    root.id = 'app'
+    document.body.appendChild(root)
+
+    initSinglePageApp(root)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    root.querySelector<HTMLButtonElement>('[data-action="open-relay"]')?.click()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    const warned = warnSpy.mock.calls.some((call) => String(call[0]).includes('[HEALTH][AI]'))
+    expect(warned).toBe(true)
   })
 
   it('updates dot colors based on emitted events', () => {

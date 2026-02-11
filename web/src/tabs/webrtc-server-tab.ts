@@ -1,7 +1,9 @@
 import './tab-style.css'
 
 import { onAppEvent } from '../common'
-import { STORAGE_SIGNALING_URL_KEY } from './shared-config'
+import { DEFAULT_AI_BASE_URL, getAiBaseUrlFromStorage, STORAGE_SIGNALING_URL_KEY } from './shared-config'
+import { buildHealthTargets } from './health-targets'
+import { checkHealth, type HealthCheckResult, type HealthKind } from './health-check'
 
 type StepId = 'relay' | 'phone' | 'connect' | 'show' | 'track'
 type StepState = 'idle' | 'working' | 'ok' | 'fail'
@@ -19,8 +21,10 @@ type ResolvedConfig = {
   relayPort: number
   relayUrl: string
   relayHealthUrl: string
-  sameOriginHealthUrl: string
+  aiHealthUrl: string
+  webUiUrl: string
   pcHealthUrl: string
+  pcKind: 'pc' | 'webUi'
   source: 'query-relay' | 'query-ip' | 'storage' | 'hostname' | 'manual'
   unknownReason?: string
 }
@@ -162,21 +166,21 @@ function componentStateFromLastSeen(lastSeenMs: number): ComponentState {
   return 'offline'
 }
 
-async function pollHealth(component: 'phone' | 'pc' | 'relay' | 'backend', url: string, timeoutMs = 1800): Promise<boolean> {
-  globalHealthControllers[component]?.abort()
-  const controller = new AbortController()
-  globalHealthControllers[component] = controller
-  const timer = window.setTimeout(() => controller.abort(), timeoutMs)
-  try {
-    const response = await fetch(url, { cache: 'no-store', signal: controller.signal })
-    if (!response.ok) return false
-    const payload = await response.json().catch(() => null)
-    return Boolean(payload && payload.ok === true)
-  } catch {
-    return false
-  } finally {
-    window.clearTimeout(timer)
-  }
+async function pollHealth(component: 'pc' | 'relay' | 'backend', kind: HealthKind, url: string): Promise<HealthCheckResult> {
+  const result = await checkHealth({ kind, url, timeoutMs: 1800 })
+  return result
+}
+
+function formatHealthFailureDetails(result: HealthCheckResult): string {
+  const parts = [
+    `url=${result.url}`,
+    `status=${String(result.status)}`,
+    `contentType=${result.contentType || 'unknown'}`,
+  ]
+  if (result.error) parts.push(`error=${result.error}`)
+  if (result.parseError) parts.push(`parseError=${result.parseError}`)
+  if (result.preview) parts.push(`preview=${result.preview.replace(/\s+/g, ' ').trim()}`)
+  return parts.join(' | ')
 }
 
 function buildPhonePublisherHtml(relayUrl: string) {
@@ -445,9 +449,9 @@ export function mountWebrtcServerTab(root: HTMLElement) {
             <thead><tr><th>Component</th><th>IP</th><th>Health URL / Runtime</th><th>Health</th><th>Status</th><th>Details</th></tr></thead>
             <tbody>
               <tr data-component="phone"><td>This device (phone publisher)</td><td data-field="ip">unknown</td><td data-field="healthUrl">runtime-only</td><td><input data-health-toggle="phone" type="checkbox" checked /></td><td><span class="systemStatus systemStatus--offline" data-field="status"></span></td><td data-field="details">waiting</td></tr>
-              <tr data-component="pc"><td>PC receiver</td><td data-field="ip">unknown</td><td data-field="healthUrl">unknown</td><td><input data-health-toggle="pc" type="checkbox" checked /></td><td><span class="systemStatus systemStatus--offline" data-field="status"></span></td><td data-field="details">waiting</td></tr>
+              <tr data-component="pc"><td>PC receiver (optional)</td><td data-field="ip">unknown</td><td data-field="healthUrl">unknown</td><td><input data-health-toggle="pc" type="checkbox" checked /></td><td><span class="systemStatus systemStatus--offline" data-field="status"></span></td><td data-field="details">waiting</td></tr>
               <tr data-component="relay"><td>WS signaling relay</td><td data-field="ip">unknown</td><td data-field="healthUrl">unknown</td><td><input data-health-toggle="relay" type="checkbox" checked /></td><td><span class="systemStatus systemStatus--offline" data-field="status"></span></td><td data-field="details">waiting</td></tr>
-              <tr data-component="backend"><td>Health endpoint (same-origin /health)</td><td data-field="ip">same-origin</td><td data-field="healthUrl">unknown</td><td><input data-health-toggle="backend" type="checkbox" checked /></td><td><span class="systemStatus systemStatus--offline" data-field="status"></span></td><td data-field="details">waiting</td></tr>
+              <tr data-component="backend"><td>AI server</td><td data-field="ip">unknown</td><td data-field="healthUrl">unknown</td><td><input data-health-toggle="backend" type="checkbox" checked /></td><td><span class="systemStatus systemStatus--offline" data-field="status"></span></td><td data-field="details">waiting</td></tr>
             </tbody>
           </table>
           <div id="resolvedConfig" class="hint mono"></div>
@@ -539,11 +543,13 @@ export function mountWebrtcServerTab(root: HTMLElement) {
   const healthEnabled: Record<'phone' | 'pc' | 'relay' | 'backend', boolean> = { phone: true, pc: true, relay: true, backend: true }
   const lastHealthFailureKey: Partial<Record<'relay' | 'backend' | 'pc', string>> = {}
 
-  function logHealthFailureOnce(component: 'relay' | 'backend' | 'pc', url: string, reason: string) {
-    const key = `${url}|${reason}`
+  function logHealthFailureOnce(component: 'relay' | 'backend' | 'pc', result: HealthCheckResult) {
+    const details = formatHealthFailureDetails(result)
+    const key = `${result.url}|${details}`
     if (lastHealthFailureKey[component] === key) return
     lastHealthFailureKey[component] = key
-    console.warn(`[WEBRTC][HEALTH] ${component} health failed`, { url, reason })
+    const tag = component === 'backend' ? 'AI' : (component === 'relay' ? 'RELAY' : 'PC')
+    console.warn(`[HEALTH][${tag}] check failed`, details)
   }
 
   function clearHealthFailure(component: 'relay' | 'backend' | 'pc') {
@@ -671,15 +677,29 @@ export function mountWebrtcServerTab(root: HTMLElement) {
       : 'hostname is loopback/empty; use ?relay=ws://<ip>:8765 or manual IP')
 
     const relayUrl = relayHost ? `ws://${relayHost}:${relayPort}` : ''
-    const relayHealthPort = relayPort + 1
-    const relayHealthUrl = relayHost ? `http://${relayHost}:${relayHealthPort}/health` : 'runtime-only'
-    const sameOriginHealthUrl = window.location.protocol === 'file:' ? 'runtime-only' : `${window.location.origin}/health`
-    const pcBase = (pcBaseParam || storagePcBase || '').trim()
-    const normalizedPcBase = pcBase ? pcBase.replace(/\/$/, '') : ''
-    const sameAsAppOrigin = normalizedPcBase !== '' && window.location.protocol !== 'file:' && normalizedPcBase === window.location.origin
-    const pcHealthUrl = normalizedPcBase && !sameAsAppOrigin ? `${normalizedPcBase}/health` : 'runtime-only'
+    const aiBaseUrl = getAiBaseUrlFromStorage() || DEFAULT_AI_BASE_URL
+    const webUiBaseUrl = window.location.protocol === 'file:' ? '' : window.location.origin
+    const pcBaseUrl = (pcBaseParam || storagePcBase || '').trim()
+    const targets = buildHealthTargets({
+      aiBaseUrl,
+      webUiBaseUrl,
+      relayHost,
+      relayPort,
+      pcBaseUrl,
+    })
 
-    return { relayHost, relayPort, relayUrl, relayHealthUrl, sameOriginHealthUrl, pcHealthUrl, source, unknownReason }
+    return {
+      relayHost,
+      relayPort,
+      relayUrl,
+      relayHealthUrl: targets.relayHealthUrl,
+      aiHealthUrl: targets.aiHealthUrl,
+      webUiUrl: targets.webUiUrl,
+      pcHealthUrl: targets.pcHealthUrl,
+      pcKind: targets.pcKind,
+      source,
+      unknownReason,
+    }
   }
 
 
@@ -721,7 +741,7 @@ export function mountWebrtcServerTab(root: HTMLElement) {
     const phoneEnabled = loadHealthToggle('phone', phoneHealth)
     const pcEnabled = loadHealthToggle('pc', config.pcHealthUrl)
     const relayEnabled = loadHealthToggle('relay', config.relayHealthUrl)
-    const backendEnabled = loadHealthToggle('backend', config.sameOriginHealthUrl)
+    const backendEnabled = loadHealthToggle('backend', config.aiHealthUrl)
 
     healthEnabled.phone = phoneEnabled
     healthEnabled.pc = pcEnabled
@@ -738,9 +758,10 @@ export function mountWebrtcServerTab(root: HTMLElement) {
     if (backendToggle) backendToggle.checked = backendEnabled
 
     setComponent('phone', { ip: phoneIp, healthUrl: phoneHealth, details: phoneDetails, state: phoneEnabled ? phoneState : 'paused' })
-    setComponent('pc', { ip: window.location.hostname || 'unknown', healthUrl: config.pcHealthUrl, details: config.pcHealthUrl === 'runtime-only' ? 'runtime state only (no /health polling)' : 'polling custom PC /health', state: pcEnabled ? 'online' : 'paused' })
+    const pcLabel = config.pcKind === 'pc' ? 'polling custom PC /health' : 'web UI check uses / (not /health)'
+    setComponent('pc', { ip: window.location.hostname || 'unknown', healthUrl: config.pcKind === 'pc' ? config.pcHealthUrl : config.webUiUrl, details: pcLabel, state: pcEnabled ? 'online' : 'paused' })
     setComponent('relay', { ip: config.relayHost || 'unknown', healthUrl: config.relayHealthUrl, details: config.unknownReason ?? 'polling relay /health', state: relayEnabled ? 'offline' : 'paused' })
-    setComponent('backend', { ip: window.location.hostname || 'unknown', healthUrl: config.sameOriginHealthUrl, details: config.sameOriginHealthUrl === 'runtime-only' ? 'no http health (file://)' : 'polling same-origin /health', state: backendEnabled ? 'offline' : 'paused' })
+    setComponent('backend', { ip: (() => { try { return new URL(config.aiHealthUrl).hostname } catch { return 'unknown' } })(), healthUrl: config.aiHealthUrl, details: config.aiHealthUrl === 'runtime-only' ? 'AI server URL unavailable' : 'polling AI /health JSON', state: backendEnabled ? 'offline' : 'paused' })
   }
 
   function updatePhoneHtmlFromInputs() {
@@ -771,21 +792,27 @@ export function mountWebrtcServerTab(root: HTMLElement) {
     renderResolved()
 
     if (healthEnabled.relay && config.relayHealthUrl !== 'runtime-only') {
-      const relayOk = await pollHealth('relay', config.relayHealthUrl)
-      setComponent('relay', { state: relayOk ? 'online' : 'offline' })
-      if (relayOk) clearHealthFailure('relay')
-      else logHealthFailureOnce('relay', config.relayHealthUrl, 'unhealthy_response')
+      const relayResult = await pollHealth('relay', 'relay', config.relayHealthUrl)
+      setComponent('relay', {
+        state: relayResult.ok ? 'online' : 'offline',
+        details: relayResult.ok ? 'relay /health JSON ok' : relayResult.error || 'relay health failed',
+      })
+      if (relayResult.ok) clearHealthFailure('relay')
+      else logHealthFailureOnce('relay', relayResult)
     } else {
       globalHealthControllers.relay?.abort()
       clearHealthFailure('relay')
       setComponent('relay', { state: 'paused', details: 'health polling disabled' })
     }
 
-    if (healthEnabled.backend && config.sameOriginHealthUrl !== 'runtime-only') {
-      const backendOk = await pollHealth('backend', config.sameOriginHealthUrl)
-      setComponent('backend', { state: backendOk ? 'online' : 'offline' })
-      if (backendOk) clearHealthFailure('backend')
-      else logHealthFailureOnce('backend', config.sameOriginHealthUrl, 'unhealthy_response')
+    if (healthEnabled.backend && config.aiHealthUrl !== 'runtime-only') {
+      const aiResult = await pollHealth('backend', 'aiServer', config.aiHealthUrl)
+      setComponent('backend', {
+        state: aiResult.ok ? 'online' : 'offline',
+        details: aiResult.ok ? 'AI /health JSON ok' : aiResult.error || 'AI health failed',
+      })
+      if (aiResult.ok) clearHealthFailure('backend')
+      else logHealthFailureOnce('backend', aiResult)
     } else {
       globalHealthControllers.backend?.abort()
       clearHealthFailure('backend')
@@ -794,12 +821,20 @@ export function mountWebrtcServerTab(root: HTMLElement) {
 
     if (healthEnabled.pc) {
       clearHealthFailure('pc')
-      setComponent('pc', { state: 'online', details: config.pcHealthUrl === 'runtime-only' ? 'runtime state only (no /health polling)' : 'polling custom PC /health' })
-      if (config.pcHealthUrl !== 'runtime-only') {
-        const pcOk = await pollHealth('pc', config.pcHealthUrl)
-        setComponent('pc', { state: pcOk ? 'online' : componentStateFromLastSeen(lastSignals.pc || 0) })
-        if (pcOk) clearHealthFailure('pc')
-        else logHealthFailureOnce('pc', config.pcHealthUrl, 'unhealthy_response')
+      const pcKind: HealthKind = config.pcKind === 'pc' ? 'pc' : 'webUi'
+      const pcUrl = config.pcKind === 'pc' ? config.pcHealthUrl : config.webUiUrl
+      if (pcUrl !== 'runtime-only') {
+        const pcResult = await pollHealth('pc', pcKind, pcUrl)
+        setComponent('pc', {
+          state: pcResult.ok ? 'online' : componentStateFromLastSeen(lastSignals.pc || 0),
+          details: pcResult.ok
+            ? (config.pcKind === 'pc' ? 'PC /health JSON ok' : 'Web UI HTML response ok')
+            : pcResult.error || 'PC/Web health failed',
+        })
+        if (pcResult.ok) clearHealthFailure('pc')
+        else logHealthFailureOnce('pc', pcResult)
+      } else {
+        setComponent('pc', { state: 'paused', details: 'no PC/Web URL configured' })
       }
     } else {
       globalHealthControllers.pc?.abort()
@@ -886,7 +921,7 @@ export function mountWebrtcServerTab(root: HTMLElement) {
         : component === 'pc'
           ? cfg.pcHealthUrl
           : component === 'backend'
-            ? cfg.sameOriginHealthUrl
+            ? cfg.aiHealthUrl
             : (window.location.protocol === 'file:' ? 'runtime-only' : `${window.location.origin}/health + runtime state`)
       saveHealthToggle(component, url, enabled)
       console.log('[WEBRTC][HEALTH] toggle changed', { component, enabled, url })
