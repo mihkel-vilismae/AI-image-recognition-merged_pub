@@ -56,11 +56,6 @@
   padding-top: 14px;
 }
 
-.cameraPreviewWrap {
-  max-width: 760px;
-}
-
-
 .webrtcServerGrid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -225,11 +220,6 @@
 .streamPanel--top {
   margin-top: 0;
   margin-bottom: 12px;
-}
-
-.cameraPreviewWrap {
-  max-width: 960px;
-  max-height: min(56vh, 540px);
 }
 
 #receiverLog,
