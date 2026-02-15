@@ -1,4 +1,6 @@
-export type AppRoute = 'images' | 'videos' | 'camera-stream' | 'webrtc-server' | 'vidcon-monitor'
+export type AppRoute = 'images' | 'videos' | 'camera-stream' | 'webrtc-server' | 'vidcon-monitor' | 'mobile-image-recognition'
+
+export const APP_VERSION = 'v0.2.1'
 
 const DEFAULT_ROUTE: AppRoute = 'images'
 
@@ -14,6 +16,7 @@ export function parseRouteFromHash(hash: string): AppRoute {
   if (route === 'camera-stream') return 'camera-stream'
   if (route === 'webrtc-server') return 'webrtc-server'
   if (route === 'vidcon-monitor') return 'vidcon-monitor'
+  if (route === 'mobile-image-recognition') return 'mobile-image-recognition'
   return DEFAULT_ROUTE
 }
 
