@@ -47,6 +47,7 @@ describe('single page tabs', () => {
 
     initSinglePageApp(root)
 
+    expect(root.querySelector('.mainMenuTitle')?.textContent).toContain('Main Menu')
     expect(window.location.hash).toBe('#/images')
     expect(root.querySelector('h1')?.textContent).toContain('AI Image Recognition')
 
@@ -64,7 +65,7 @@ describe('single page tabs', () => {
     initSinglePageApp(root)
 
     const tabRoutes = Array.from(root.querySelectorAll<HTMLAnchorElement>('.tabLink')).map((el) => el.dataset.route)
-    expect(tabRoutes).toEqual(['images', 'videos', 'camera-stream', 'webrtc-server', 'vidcon-monitor'])
+    expect(tabRoutes).toEqual(['images', 'videos', 'camera-stream', 'webrtc-server', 'vidcon-monitor', 'mobile-image-recognition'])
 
     window.location.hash = '#/webrtc-server'
     window.dispatchEvent(new HashChangeEvent('hashchange'))
@@ -159,6 +160,22 @@ describe('single page tabs', () => {
 
     expect(root.querySelector('h1')?.textContent).toContain('VidConMonitor')
     expect(root.querySelector<HTMLAnchorElement>('[data-route="vidcon-monitor"]')?.dataset.active).toBe('true')
+  })
+
+
+
+  it('renders mobile image recognition tab and keeps version visible', () => {
+    const root = document.createElement('div')
+    root.id = 'app'
+    document.body.appendChild(root)
+
+    window.location.hash = '#/mobile-image-recognition'
+    initSinglePageApp(root)
+
+    expect(root.querySelector('h1')?.textContent).toContain('Mobile Image Recognition')
+    expect(root.querySelector<HTMLButtonElement>('#mobileImageRun')?.textContent).toContain('Run Mobile AI Recognition')
+    expect(root.querySelector<HTMLAnchorElement>('[data-route="mobile-image-recognition"]')?.dataset.active).toBe('true')
+    expect(root.textContent).toContain('App Version: v0.2.1')
   })
 
   it('marks selected tab active', () => {

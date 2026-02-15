@@ -1,23 +1,29 @@
 import './style.css'
 
-import { parseRouteFromHash, type AppRoute } from './common'
+import { APP_VERSION, parseRouteFromHash, type AppRoute } from './common'
 import { mountCameraStreamTab } from './tabs/camera-stream-tab'
 import { mountImagesTab } from './tabs/images-tab'
 import { mountVideosTab } from './tabs/videos-tab'
 import { mountWebrtcServerTab } from './tabs/webrtc-server-tab'
 import { mountVidconMonitorTab } from './tabs/vidcon-monitor-tab'
+import { mountMobileImageRecognitionTab } from './tabs/mobile-image-recognition/mobile-image-recognition-tab'
 
 function renderShell(root: HTMLElement) {
   root.innerHTML = `
   <div class="tabsShell">
-    <nav class="tabsNav" aria-label="Main tabs">
-      <a class="tabLink" data-route="images" href="#/images">Images</a>
-      <a class="tabLink" data-route="videos" href="#/videos">Videos</a>
-      <a class="tabLink" data-route="camera-stream" href="#/camera-stream">Camera Stream</a>
-      <a class="tabLink" data-route="webrtc-server" href="#/webrtc-server">WebRTC Server</a>
-      <a class="tabLink" data-route="vidcon-monitor" href="#/vidcon-monitor">VidConMonitor</a>
-    </nav>
+    <section class="mainMenu" aria-label="Main menu">
+      <h2 class="mainMenuTitle">Main Menu</h2>
+      <nav class="tabsNav" aria-label="Main tabs">
+        <a class="tabLink" data-route="images" href="#/images">Images</a>
+        <a class="tabLink" data-route="videos" href="#/videos">Videos</a>
+        <a class="tabLink" data-route="camera-stream" href="#/camera-stream">Camera Stream</a>
+        <a class="tabLink" data-route="webrtc-server" href="#/webrtc-server">WebRTC Server</a>
+        <a class="tabLink" data-route="vidcon-monitor" href="#/vidcon-monitor">VidConMonitor</a>
+        <a class="tabLink" data-route="mobile-image-recognition" href="#/mobile-image-recognition">Mobile Image Recognition</a>
+      </nav>
+    </section>
     <section id="tabView"></section>
+    <footer class="mono" style="padding: 8px 2px; opacity: 0.8;">App Version: ${APP_VERSION}</footer>
   </div>
   `
 }
@@ -55,7 +61,12 @@ function mountRoute(root: HTMLElement) {
     return
   }
 
-  mountVidconMonitorTab(tabView)
+  if (route === 'vidcon-monitor') {
+    mountVidconMonitorTab(tabView)
+    return
+  }
+
+  mountMobileImageRecognitionTab(tabView)
 }
 
 export function initSinglePageApp(root: HTMLElement) {
